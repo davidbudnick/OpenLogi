@@ -9,10 +9,12 @@
 //! `HotspotTrigger` element that highlights on hover *and* while the popover
 //! is open.
 
+use std::time::Duration;
+
 use gpui::{
-    Anchor, AnyElement, App, Context, ElementId, Entity, FontWeight, InteractiveElement,
-    IntoElement, MouseButton, ParentElement, Render, RenderOnce, StatefulInteractiveElement as _,
-    Styled, Window, canvas, div, hsla, px, rgb,
+    Anchor, Animation, AnimationExt as _, AnyElement, App, Context, ElementId, Entity, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Render, RenderOnce,
+    StatefulInteractiveElement as _, Styled, Window, canvas, div, ease_in_out, hsla, px, rgb,
 };
 use gpui_component::{Selectable, popover::Popover, v_flex};
 
@@ -87,7 +89,10 @@ impl Render for MouseModelView {
             .child(leader_canvas)
             // Mouse silhouette + hotspots inside their own positioned
             // sub-container so the absolute hotspot coords stay
-            // mouse-local.
+            // mouse-local. Wrapped in `with_animation` for the ambient
+            // breathing rise/fall (UI.md Phase 8). The container is
+            // absolute-positioned so vertical breathing happens via
+            // `.top(px(mouse_left + dy))` — `.mt` wouldn't take effect.
             .child(
                 div()
                     .absolute()
@@ -98,7 +103,17 @@ impl Render for MouseModelView {
                     .child(silhouette(mouse_w, mouse_h))
                     .children(self.hotspots.iter().enumerate().map(|(idx, hotspot)| {
                         hotspot_popover(idx, *hotspot, hovered, active, &view)
-                    })),
+                    }))
+                    .with_animation(
+                        "mouse-breath",
+                        Animation::new(Duration::from_secs(4))
+                            .repeat()
+                            .with_easing(ease_in_out),
+                        |this, delta| {
+                            let dy = (delta * std::f32::consts::TAU).sin() * BREATH_AMPLITUDE;
+                            this.top(px(dy))
+                        },
+                    ),
             )
             // Labels, positioned in canvas-local coords on each side.
             .children(self.labels.iter().map(|label| {
@@ -109,6 +124,10 @@ impl Render for MouseModelView {
             }))
     }
 }
+
+/// Vertical amplitude of the breathing loop. Two pixels reads as a soft
+/// rise/fall without feeling unstable.
+const BREATH_AMPLITUDE: f32 = 2.0;
 
 fn default_labels() -> Vec<Label> {
     vec![
