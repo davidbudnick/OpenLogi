@@ -18,7 +18,7 @@ pub mod sync;
 use std::path::{Path, PathBuf};
 
 use directories::ProjectDirs;
-use openlogi_assets::{DeviceEntry, Index, Metadata};
+use openlogi_assets::{DepotManifest, DeviceEntry, Index, Metadata, variant_model_id};
 use openlogi_core::device::DeviceModelInfo;
 use tracing::{debug, warn};
 
@@ -79,17 +79,34 @@ impl AssetCache {
     pub fn resolve(&self, model: &DeviceModelInfo) -> Option<ResolvedAsset> {
         let index = self.index.as_ref()?;
         let (depot, entry) = resolve_in_index(index, model)?;
-        self.load_files(depot, entry)
+        self.load_files(depot, entry, model)
     }
 
-    fn load_files(&self, depot: &str, entry: &DeviceEntry) -> Option<ResolvedAsset> {
+    fn load_files(
+        &self,
+        depot: &str,
+        entry: &DeviceEntry,
+        model: &DeviceModelInfo,
+    ) -> Option<ResolvedAsset> {
         for root in &self.read_roots {
             let dir = root.join(depot);
-            let image_path = dir.join("front_core.png");
             let meta_path = dir.join("core_metadata.json");
-            if !image_path.exists() || !meta_path.exists() {
+            if !meta_path.exists() {
                 continue;
             }
+
+            // Pick the colour variant matching this device's HID++
+            // extended_model_id byte. Falls back to `front_core.png`
+            // when the depot has no manifest, the manifest doesn't list
+            // the variant, or the variant PNG isn't cached.
+            let image_name =
+                variant_image_for(&dir, &entry.model_id, model.extended_model_id)
+                    .unwrap_or_else(|| "front_core.png".to_string());
+            let image_path = dir.join(&image_name);
+            if !image_path.exists() {
+                continue;
+            }
+
             let metadata = match Metadata::load_from(&meta_path) {
                 Ok(m) => m,
                 Err(e) => {
@@ -97,7 +114,13 @@ impl AssetCache {
                     continue;
                 }
             };
-            debug!(depot, root = %root.display(), "asset hit");
+            debug!(
+                depot,
+                root = %root.display(),
+                image = %image_name,
+                ext = model.extended_model_id,
+                "asset hit"
+            );
             return Some(ResolvedAsset {
                 depot: depot.to_string(),
                 display_name: entry.display_name.clone(),
@@ -108,6 +131,25 @@ impl AssetCache {
         debug!(depot, "asset cache miss across all roots");
         None
     }
+}
+
+/// Walk the depot's `manifest.json` (if present) for the colour
+/// variant matching `ext`. Returns the `device_image` src filename or
+/// `None` when the manifest is missing / malformed / lacks the variant.
+fn variant_image_for(dir: &Path, base_model_id: &str, ext: u8) -> Option<String> {
+    if ext == 0 {
+        return None;
+    }
+    let manifest_path = dir.join("manifest.json");
+    if !manifest_path.exists() {
+        return None;
+    }
+    let manifest = DepotManifest::load_from(&manifest_path)
+        .map_err(|e| warn!(error = ?e, path = %manifest_path.display(), "depot manifest unreadable"))
+        .ok()?;
+    let variant = variant_model_id(base_model_id, ext);
+    let src = manifest.device_image_for(&variant)?;
+    Some(src.to_string())
 }
 
 impl Default for AssetCache {

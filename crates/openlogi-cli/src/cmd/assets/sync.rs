@@ -17,11 +17,28 @@ use openlogi_assets::http;
 /// Default origin. Overridable via `--base` / `OPENLOGI_ASSETS`.
 const DEFAULT_BASE: &str = "https://assets.openlogi.org";
 
-/// Files the GUI's `AssetCache` opens at runtime. Everything else in
-/// each depot stays remote until a feature needs it.
-const FETCH_FILES: &[&str] = &["front_core.png", "core_metadata.json"];
+/// Required per-depot files. `AssetCache` always reads
+/// `core_metadata.json` for hotspot layout; `manifest.json` drives the
+/// HID++ `extended_model_id` → colour variant lookup; `front_core.png`
+/// is the fallback render when the device's variant isn't cached.
+const REQUIRED_FILES: &[&str] = &[
+    "core_metadata.json",
+    "manifest.json",
+    "front_core.png",
+];
 
 const INDEX_NAME: &str = "index.json";
+
+/// Returns true when `name` is a front-view colour variant PNG
+/// (`front_ext_1.png`, `front_ext_2.png`, …). The depot also ships
+/// `side_*` and `back_*` renders — those stay remote until a future
+/// scroll / easyswitch view needs them.
+fn is_variant_front(name: &str) -> bool {
+    name.starts_with("front_ext_")
+        && std::path::Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+}
 
 #[derive(Debug, Args)]
 pub struct SyncArgs {
@@ -68,21 +85,35 @@ pub fn run(args: SyncArgs) -> Result<()> {
         let entry = &index.devices[depot];
         let dir = out.join(depot);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-        for name in FETCH_FILES {
-            let Some(file_entry) = entry.files.iter().find(|f| f.name == *name) else {
-                eprintln!("  WARN {depot}: registry missing {name}");
-                continue;
-            };
-            let dst = dir.join(name);
+
+        // Required core set + every front-view colour variant the
+        // registry knows about. The depot manifest is fetched
+        // unconditionally so `AssetCache` can route HID++ ext bytes to
+        // the right PNG; missing files trip a per-file warning.
+        let wanted: Vec<&openlogi_assets::FileEntry> = entry
+            .files
+            .iter()
+            .filter(|f| {
+                REQUIRED_FILES.contains(&f.name.as_str()) || is_variant_front(&f.name)
+            })
+            .collect();
+        for required in REQUIRED_FILES {
+            if !wanted.iter().any(|f| f.name == *required) {
+                eprintln!("  WARN {depot}: registry missing {required}");
+            }
+        }
+
+        for file_entry in &wanted {
+            let dst = dir.join(&file_entry.name);
             if http::cached_matches(&dst, &file_entry.sha256) {
                 cache_hits += 1;
                 continue;
             }
-            let bytes = http::fetch_file(&base, &entry.asset_path, name)?;
+            let bytes = http::fetch_file(&base, &entry.asset_path, &file_entry.name)?;
             fs::write(&dst, &bytes)
                 .with_context(|| format!("write {}", dst.display()))?;
             fetched += 1;
-            println!("  {depot}/{name} ({} B)", file_entry.bytes);
+            println!("  {depot}/{} ({} B)", file_entry.name, file_entry.bytes);
         }
     }
 
@@ -90,7 +121,7 @@ pub fn run(args: SyncArgs) -> Result<()> {
         .devices
         .values()
         .flat_map(|d| d.files.iter())
-        .filter(|f| FETCH_FILES.contains(&f.name.as_str()))
+        .filter(|f| REQUIRED_FILES.contains(&f.name.as_str()) || is_variant_front(&f.name))
         .map(|f| f.bytes)
         .sum();
     #[allow(

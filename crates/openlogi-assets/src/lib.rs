@@ -12,10 +12,13 @@
 
 pub mod http;
 pub mod index;
+pub mod manifest;
 pub mod metadata;
 
 pub use http::{
-    cached_matches, fetch_file, fetch_index, read_bytes, sha256_hex, sha256_of_file,
+    cached_matches, fetch_file, fetch_index, fetch_index_raw, read_bytes, sha256_hex,
+    sha256_of_file,
 };
 pub use index::{DeviceEntry, FileEntry, Index};
+pub use manifest::{DepotManifest, ManifestDevice, ManifestResource, variant_model_id};
 pub use metadata::{Assignment, Direction, ImageEntry, Metadata, Origin, Point};
