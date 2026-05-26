@@ -82,6 +82,20 @@ pub struct DeviceModelInfo {
     pub extended_model_id: u8,
 }
 
+impl DeviceModelInfo {
+    /// Stable identifier used to key per-device configuration (button
+    /// bindings, etc.) and to look up assets in the OpenLogi asset registry.
+    ///
+    /// Format: `{extended_model_id:x}{model_ids[0]:04x}` — the same string
+    /// the depot `manifest.json` uses for its `modelId` field. Example: an
+    /// MX Master 4 with `extended_model_id = 0x02` and `model_ids[0] = 0xb042`
+    /// resolves to `"2b042"`.
+    #[must_use]
+    pub fn config_key(&self) -> String {
+        format!("{:x}{:04x}", self.extended_model_id, self.model_ids[0])
+    }
+}
+
 /// Mirror of hidpp's `DeviceTransport` bitfield — one bool per protocol the
 /// device firmware exposes. The shape is dictated by HID++ feature 0x0003;
 /// a state machine doesn't fit since a single device can announce multiple

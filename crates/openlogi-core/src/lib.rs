@@ -4,6 +4,7 @@
 //! the user config file. It must never depend on `hidpp`, `async-hid`, or any
 //! platform-specific event/window API — those live in sibling crates.
 
+pub mod binding;
 pub mod config;
 pub mod device;
 pub mod paths;

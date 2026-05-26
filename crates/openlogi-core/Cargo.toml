@@ -19,5 +19,9 @@ directories = { workspace = true }
 # Structured logging (instrumentation only; no subscriber).
 tracing = { workspace = true }
 
+[dev-dependencies]
+# Scratch directories for config-roundtrip tests.
+tempfile = "3"
+
 [lints]
 workspace = true

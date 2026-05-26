@@ -10,8 +10,9 @@ use gpui::{
     Window, div, px, rgb,
 };
 use gpui_component::{ActiveTheme, h_flex, v_flex};
+use openlogi_core::config::Config;
 use openlogi_core::device::DeviceInventory;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::asset::AssetCache;
 use crate::components::device_carousel::DeviceCarousel;
@@ -30,9 +31,16 @@ pub struct AppView {
 
 impl AppView {
     pub fn new(inventories: &[DeviceInventory], cx: &mut Context<Self>) -> Self {
-        if !cx.has_global::<AppState>() {
-            cx.set_global(AppState::new());
-        }
+        // Load persisted config first so the initial AppState reflects any
+        // saved bindings. A malformed or unreadable file falls back to
+        // defaults with a warning rather than crashing the UI.
+        let config = match Config::load_or_default() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "could not load config.toml — starting with defaults");
+                Config::default()
+            }
+        };
 
         // Resolve the device asset for the first online paired device that
         // reports HID++ model info. Carousel-driven re-resolution comes in
@@ -49,6 +57,21 @@ impl AppView {
                 root = ?cache.cache_root(),
                 "no asset match for connected devices — using synthetic silhouette"
             );
+        }
+
+        // Config-persistence key for the active device. Uses the HID++
+        // model+ext identifier so the config file can scope settings per
+        // physical device. Same selection rule as the DPI target below.
+        let device_key = inventories
+            .iter()
+            .flat_map(|inv| inv.paired.iter())
+            .find_map(|p| p.model_info.as_ref().map(|m| m.config_key()));
+        if let Some(k) = device_key.as_deref() {
+            info!(device_key = k, "config bindings scoped to device");
+        }
+
+        if !cx.has_global::<AppState>() {
+            cx.set_global(AppState::from_config(config, device_key));
         }
 
         // Route the DPI slider's HID writes to the first online paired

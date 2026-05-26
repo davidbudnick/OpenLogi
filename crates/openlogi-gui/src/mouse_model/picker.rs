@@ -59,7 +59,7 @@ pub fn action_picker<T: 'static>(
                 .on_click(move |_event, window, cx| {
                     let action = (*action).clone();
                     cx.update_global::<AppState, _>(|state, _| {
-                        state.button_bindings.insert(btn, action);
+                        state.commit_binding(btn, action);
                     });
                     observer.update(cx, |_, cx| cx.notify());
                     if let Some(p) = popover.upgrade() {
