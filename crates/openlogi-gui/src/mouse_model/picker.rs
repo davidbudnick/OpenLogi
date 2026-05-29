@@ -28,7 +28,7 @@ use crate::data::mouse_buttons::{
     Action, ButtonId, Category, GestureDirection, default_gesture_binding,
 };
 use crate::state::AppState;
-use crate::theme::{ACCENT_BLUE, BORDER, SURFACE_HOVER, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{self, ACCENT_BLUE, Palette};
 
 /// Minimum popover width. Wide enough for the gesture rows' two columns
 /// (direction name on the left, bound action on the right).
@@ -62,13 +62,14 @@ pub fn action_picker<T: 'static>(
         }
     });
 
+    let pal = theme::palette(cx);
     v_flex()
         .min_w(px(POPOVER_W))
-        .child(title(format!("Bind {}", btn.label())))
-        .child(divider())
+        .child(title(format!("Bind {}", btn.label()), pal))
+        .child(divider(pal))
         .child(scroll_list(
             "picker-scroll",
-            action_rows("action-item", current.as_ref(), &on_pick),
+            action_rows("action-item", current.as_ref(), &on_pick, pal),
         ))
         .into_any_element()
 }
@@ -93,6 +94,7 @@ fn gesture_directions_list<T: 'static>(
     observer: &Entity<T>,
     cx: &mut Context<PopoverState>,
 ) -> AnyElement {
+    let pal = theme::palette(cx);
     let bindings = cx
         .try_global::<AppState>()
         .map(|s| s.gesture_bindings.clone())
@@ -108,26 +110,21 @@ fn gesture_directions_list<T: 'static>(
                 .cloned()
                 .unwrap_or_else(|| default_gesture_binding(dir));
             let observer = observer.clone();
-            menu_row(("gesture-row", idx))
+            menu_row(("gesture-row", idx), pal)
                 .child(
                     h_flex()
                         .items_center()
                         .gap_2()
                         // Fixed-width glyph so the direction names line up.
-                        .child(
-                            div()
-                                .w(px(14.))
-                                .text_color(rgb(TEXT_MUTED))
-                                .child(dir.glyph()),
-                        )
-                        .child(div().text_color(rgb(TEXT_PRIMARY)).child(dir.label())),
+                        .child(div().w(px(14.)).text_color(pal.text_muted).child(dir.glyph()))
+                        .child(div().text_color(pal.text_primary).child(dir.label())),
                 )
                 .child(
                     h_flex()
                         .items_center()
                         .gap_1p5()
                         .text_xs()
-                        .text_color(rgb(TEXT_MUTED))
+                        .text_color(pal.text_muted)
                         .child(action.label())
                         .child("›"),
                 )
@@ -141,8 +138,8 @@ fn gesture_directions_list<T: 'static>(
 
     v_flex()
         .min_w(px(POPOVER_W))
-        .child(title("Gesture Button"))
-        .child(divider())
+        .child(title("Gesture Button", pal))
+        .child(divider(pal))
         .children(rows)
         .into_any_element()
 }
@@ -169,6 +166,7 @@ fn gesture_action_picker<T: 'static>(
         observer_pick.update(cx, |_, cx| cx.notify());
     });
 
+    let pal = theme::palette(cx);
     let observer_back = observer.clone();
     let back = h_flex()
         .id("gesture-back")
@@ -179,8 +177,8 @@ fn gesture_action_picker<T: 'static>(
         .py_1()
         .rounded_md()
         .text_xs()
-        .text_color(rgb(TEXT_MUTED))
-        .hover(|s| s.bg(rgb(SURFACE_HOVER)).text_color(rgb(TEXT_PRIMARY)))
+        .text_color(pal.text_muted)
+        .hover(|s| s.bg(pal.surface_hover).text_color(pal.text_primary))
         .child("‹")
         .child(format!("Gesture {}", direction.label()))
         .on_click(move |_event, _window, cx| {
@@ -191,10 +189,10 @@ fn gesture_action_picker<T: 'static>(
     v_flex()
         .min_w(px(POPOVER_W))
         .child(back)
-        .child(divider())
+        .child(divider(pal))
         .child(scroll_list(
             "gesture-picker-scroll",
-            action_rows("gesture-action-item", current.as_ref(), &on_pick),
+            action_rows("gesture-action-item", current.as_ref(), &on_pick, pal),
         ))
         .into_any_element()
 }
@@ -228,11 +226,12 @@ fn action_rows(
     id_prefix: &'static str,
     current: Option<&Action>,
     on_pick: &PickFn,
+    pal: Palette,
 ) -> Vec<AnyElement> {
     let mut idx = 0usize;
     let mut children: Vec<AnyElement> = Vec::new();
     for (category, actions) in grouped_catalog() {
-        children.push(section_header(category.label()));
+        children.push(section_header(category.label(), pal));
         for action in actions {
             let selected = current == Some(&action);
             let label = action.label();
@@ -240,8 +239,12 @@ fn action_rows(
             let row_id = idx;
             idx += 1;
             children.push(
-                menu_row((id_prefix, row_id))
-                    .text_color(rgb(if selected { ACCENT_BLUE } else { TEXT_PRIMARY }))
+                menu_row((id_prefix, row_id), pal)
+                    .text_color(if selected {
+                        rgb(ACCENT_BLUE).into()
+                    } else {
+                        pal.text_primary
+                    })
                     .when(selected, |s| s.bg(hsla(0.6, 0.9, 0.6, 0.14)))
                     .child(div().child(label))
                     .when(selected, |s| {
@@ -255,10 +258,10 @@ fn action_rows(
     children
 }
 
-/// A clickable, full-width menu row: transparent at rest, `SURFACE_HOVER` on
-/// hover, `text-sm`, with its children spread left/right. Children are added
-/// by the caller.
-fn menu_row(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> {
+/// A clickable, full-width menu row: transparent at rest, hover-filled,
+/// `text-sm`, with its children spread left/right. Children are added by the
+/// caller.
+fn menu_row(id: impl Into<gpui::ElementId>, pal: Palette) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id)
         .w_full()
@@ -269,11 +272,11 @@ fn menu_row(id: impl Into<gpui::ElementId>) -> gpui::Stateful<gpui::Div> {
         .py_1p5()
         .rounded_md()
         .text_sm()
-        .hover(|s| s.bg(rgb(SURFACE_HOVER)))
+        .hover(move |s| s.bg(pal.surface_hover))
 }
 
 /// Small uppercase muted group header.
-fn section_header(label: &str) -> AnyElement {
+fn section_header(label: &str, pal: Palette) -> AnyElement {
     div()
         .w_full()
         .px_2()
@@ -281,25 +284,25 @@ fn section_header(label: &str) -> AnyElement {
         .pb_0p5()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(TEXT_MUTED))
+        .text_color(pal.text_muted)
         .child(label.to_uppercase())
         .into_any_element()
 }
 
 /// Popover title — the binding context, e.g. "Bind Back".
-fn title(text: impl Into<gpui::SharedString>) -> impl IntoElement {
+fn title(text: impl Into<gpui::SharedString>, pal: Palette) -> impl IntoElement {
     div()
         .px_2()
         .pb_1()
         .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(rgb(TEXT_MUTED))
+        .text_color(pal.text_muted)
         .child(text.into())
 }
 
 /// 1px hairline separating the title/back header from the list.
-fn divider() -> impl IntoElement {
-    div().mb_1().h(px(1.)).w_full().bg(rgb(BORDER))
+fn divider(pal: Palette) -> impl IntoElement {
+    div().mb_1().h(px(1.)).w_full().bg(pal.border)
 }
 
 /// Wrap `rows` in the height-capped, vertically scrollable list region.

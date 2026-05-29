@@ -7,9 +7,9 @@
 
 use gpui::{
     AppContext as _, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, Styled, Window, div, px, rgb,
+    Render, Styled, Subscription, Window, div, px,
 };
-use gpui_component::{ActiveTheme, h_flex, v_flex};
+use gpui_component::{h_flex, v_flex};
 use openlogi_core::config::Config;
 use openlogi_core::device::DeviceInventory;
 use tracing::{info, warn};
@@ -21,13 +21,19 @@ use crate::components::dpi_panel::DpiPanel;
 use crate::components::gesture_pad::GesturePad;
 use crate::mouse_model::view::MouseModelView;
 use crate::state::AppState;
-use crate::theme::{BG_DARK, BORDER, FOOTER_H, HEADER_H, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{self, FOOTER_H, HEADER_H, Palette};
 
 pub struct AppView {
     carousel: Entity<DeviceCarousel>,
     mouse_model: Entity<MouseModelView>,
     dpi_panel: Entity<DpiPanel>,
     gesture_pad: Entity<GesturePad>,
+    /// Keeps the OS-appearance observer alive for the window's lifetime.
+    /// Set once by `main` right after the view is constructed (it needs the
+    /// `Window`, which `new` doesn't have). Never read — held only so the
+    /// subscription isn't dropped.
+    #[allow(dead_code, reason = "held to keep the appearance observer alive")]
+    appearance_obs: Option<Subscription>,
 }
 
 impl AppView {
@@ -73,25 +79,38 @@ impl AppView {
             mouse_model,
             dpi_panel,
             gesture_pad,
+            appearance_obs: None,
         }
+    }
+
+    /// Park the OS-appearance observer here so it outlives the call that
+    /// created it. Called once from `main` after the window exists.
+    pub fn set_appearance_obs(&mut self, sub: Subscription) {
+        self.appearance_obs = Some(sub);
     }
 }
 
 impl Render for AppView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pal = theme::palette(cx);
         v_flex()
             .size_full()
-            .bg(rgb(BG_DARK))
-            .text_color(rgb(TEXT_PRIMARY))
+            .bg(pal.bg)
+            .text_color(pal.text_primary)
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
-            .child(header(&self.carousel))
-            .child(body(&self.mouse_model, &self.dpi_panel, &self.gesture_pad))
-            .child(footer(cx))
+            .child(header(&self.carousel, pal))
+            .child(body(
+                &self.mouse_model,
+                &self.dpi_panel,
+                &self.gesture_pad,
+                pal,
+            ))
+            .child(footer(pal))
     }
 }
 
-fn header(carousel: &Entity<DeviceCarousel>) -> impl IntoElement {
+fn header(carousel: &Entity<DeviceCarousel>, pal: Palette) -> impl IntoElement {
     h_flex()
         .h(px(HEADER_H))
         .w_full()
@@ -99,7 +118,7 @@ fn header(carousel: &Entity<DeviceCarousel>) -> impl IntoElement {
         .gap_4()
         .items_center()
         .border_b_1()
-        .border_color(rgb(BORDER))
+        .border_color(pal.border)
         .child(
             div()
                 .text_lg()
@@ -113,6 +132,7 @@ fn body(
     mouse_model: &Entity<MouseModelView>,
     dpi_panel: &Entity<DpiPanel>,
     gesture_pad: &Entity<GesturePad>,
+    pal: Palette,
 ) -> impl IntoElement {
     h_flex()
         .flex_1()
@@ -127,17 +147,16 @@ fn body(
             v_flex()
                 .gap_6()
                 .child(dpi_panel.clone())
-                .child(panel_label("Gestures"))
+                .child(panel_label("Gestures", pal))
                 .child(gesture_pad.clone()),
         )
 }
 
-fn panel_label(text: &'static str) -> impl IntoElement {
-    div().text_sm().text_color(rgb(TEXT_MUTED)).child(text)
+fn panel_label(text: &'static str, pal: Palette) -> impl IntoElement {
+    div().text_sm().text_color(pal.text_muted).child(text)
 }
 
-fn footer(cx: &Context<AppView>) -> impl IntoElement {
-    let theme = cx.theme();
+fn footer(pal: Palette) -> impl IntoElement {
     h_flex()
         .h(px(FOOTER_H))
         .w_full()
@@ -146,17 +165,17 @@ fn footer(cx: &Context<AppView>) -> impl IntoElement {
         .items_center()
         .justify_between()
         .border_t_1()
-        .border_color(rgb(BORDER))
+        .border_color(pal.border)
         .child(
             div()
                 .text_xs()
-                .text_color(theme.muted_foreground)
+                .text_color(pal.text_muted)
                 .child("Settings · About"),
         )
         .child(
             div()
                 .text_xs()
-                .text_color(theme.muted_foreground)
+                .text_color(pal.text_muted)
                 .child(concat!("v", env!("CARGO_PKG_VERSION"))),
         )
 }

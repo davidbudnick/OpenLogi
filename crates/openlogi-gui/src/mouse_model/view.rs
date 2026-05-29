@@ -25,7 +25,7 @@ use crate::mouse_model::leader_lines::{
 };
 use crate::mouse_model::picker::{action_picker, gesture_picker};
 use crate::state::AppState;
-use crate::theme::{ACCENT_BLUE, BORDER, SURFACE_HOVER, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{self, ACCENT_BLUE, Palette};
 
 // Side-gutter geometry. Labels sit on the *left* of the mouse so the right
 // half of the window is free for the DPI / gesture config column.
@@ -113,6 +113,7 @@ impl Render for MouseModelView {
         let highlight = self.hovered.or(active);
         let view = cx.entity();
         let hovered = self.hovered;
+        let pal = theme::palette(cx);
 
         // The canvas closure takes ownership of one copy of hotspots/labels;
         // clone here so the outer label_card and hotspot_popover loops can
@@ -150,7 +151,7 @@ impl Render for MouseModelView {
                 .w(px(mouse_w))
                 .h(px(mouse_h))
                 .into_any_element(),
-            None => silhouette(mouse_w, mouse_h).into_any_element(),
+            None => silhouette(mouse_w, mouse_h, pal).into_any_element(),
         };
         let breathing_art = div()
             .absolute()
@@ -458,10 +459,11 @@ impl Selectable for LabelTrigger {
 }
 
 impl RenderOnce for LabelTrigger {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let highlighted = self.highlighted || self.selected;
         let btn = self.label.id;
         let view = self.view;
+        let pal = theme::palette(cx);
         div()
             .id(self.id)
             .w(px(LABEL_W))
@@ -470,26 +472,30 @@ impl RenderOnce for LabelTrigger {
             .py_2()
             .rounded_md()
             .border_1()
-            .border_color(rgb(if highlighted { ACCENT_BLUE } else { BORDER }))
-            .bg(rgb(SURFACE_HOVER))
+            .border_color(if highlighted {
+                rgb(ACCENT_BLUE).into()
+            } else {
+                pal.border
+            })
+            .bg(pal.surface_hover)
             .child(
                 v_flex()
                     .gap_0p5()
                     .child(
                         div()
                             .text_xs()
-                            .text_color(rgb(TEXT_MUTED))
+                            .text_color(pal.text_muted)
                             .child(self.label.id.label()),
                     )
                     .child(
                         div()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(rgb(if highlighted {
-                                ACCENT_BLUE
+                            .text_color(if highlighted {
+                                rgb(ACCENT_BLUE).into()
                             } else {
-                                TEXT_PRIMARY
-                            }))
+                                pal.text_primary
+                            })
                             .child(self.binding),
                     ),
             )
@@ -508,7 +514,7 @@ impl RenderOnce for LabelTrigger {
 }
 
 /// Shape-based silhouette used when no asset is cached for the device.
-fn silhouette(w: f32, h: f32) -> impl IntoElement {
+fn silhouette(w: f32, h: f32, pal: Palette) -> impl IntoElement {
     div()
         .absolute()
         .inset_0()
@@ -516,8 +522,8 @@ fn silhouette(w: f32, h: f32) -> impl IntoElement {
         .h(px(h))
         .rounded_3xl()
         .border_1()
-        .border_color(rgb(TEXT_MUTED))
-        .bg(rgb(SURFACE_HOVER))
+        .border_color(pal.text_muted)
+        .bg(pal.surface_hover)
         .child(
             div()
                 .absolute()
@@ -535,7 +541,7 @@ fn silhouette(w: f32, h: f32) -> impl IntoElement {
                 .top(px(20.))
                 .w(px(1.))
                 .h(px(240.))
-                .bg(rgb(BORDER)),
+                .bg(pal.border),
         )
         .child(
             div()

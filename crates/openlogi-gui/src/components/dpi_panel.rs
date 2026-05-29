@@ -16,7 +16,7 @@ use gpui::{
     Window, div, px, rgb,
 };
 use gpui_component::{
-    ActiveTheme, h_flex,
+    h_flex,
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
 };
@@ -24,7 +24,7 @@ use tracing::debug;
 
 use crate::hardware::write_dpi_in_background;
 use crate::state::AppState;
-use crate::theme::{ACCENT_BLUE, BORDER, SURFACE, SURFACE_HOVER, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{self, ACCENT_BLUE, Palette};
 
 /// Identifies which physical device the slider should write DPI to.
 /// `receiver_uid` is the Bolt receiver's unique id (so we route writes
@@ -114,12 +114,12 @@ impl Render for DpiPanel {
             || (crate::state::DEFAULT_DPI, Vec::new()),
             |s| (s.dpi, s.dpi_presets()),
         );
-        let theme = cx.theme();
+        let pal = theme::palette(cx);
 
         let preset_chips: Vec<AnyElement> = presets
             .iter()
             .enumerate()
-            .map(|(idx, value)| preset_chip(idx, *value, *value == dpi, &presets))
+            .map(|(idx, value)| preset_chip(idx, *value, *value == dpi, &presets, pal))
             .collect();
 
         v_flex()
@@ -129,12 +129,7 @@ impl Render for DpiPanel {
                 h_flex()
                     .justify_between()
                     .items_baseline()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child("DPI"),
-                    )
+                    .child(div().text_sm().text_color(pal.text_muted).child("DPI"))
                     .child(
                         div()
                             .text_sm()
@@ -146,13 +141,13 @@ impl Render for DpiPanel {
             .child(
                 v_flex()
                     .gap_2()
-                    .child(div().text_xs().text_color(rgb(TEXT_MUTED)).child("PRESETS"))
+                    .child(div().text_xs().text_color(pal.text_muted).child("PRESETS"))
                     .child(
                         h_flex()
                             .gap_2()
                             .flex_wrap()
                             .children(preset_chips)
-                            .child(add_preset_chip()),
+                            .child(add_preset_chip(pal)),
                     ),
             )
     }
@@ -162,7 +157,7 @@ const CHIP_H: f32 = 28.;
 
 /// One DPI preset rendered as a chip. Clicking the chip writes that DPI to
 /// the device and updates `AppState.dpi`; the small × removes the preset.
-fn preset_chip(idx: usize, value: u32, active: bool, presets: &[u32]) -> AnyElement {
+fn preset_chip(idx: usize, value: u32, active: bool, presets: &[u32], pal: Palette) -> AnyElement {
     let presets_for_remove: Vec<u32> = presets.to_vec();
     h_flex()
         .id(("dpi-preset-chip", idx))
@@ -172,14 +167,26 @@ fn preset_chip(idx: usize, value: u32, active: bool, presets: &[u32]) -> AnyElem
         .items_center()
         .rounded_md()
         .border_1()
-        .border_color(rgb(if active { ACCENT_BLUE } else { BORDER }))
-        .bg(rgb(if active { SURFACE_HOVER } else { SURFACE }))
-        .hover(|s| s.bg(rgb(SURFACE_HOVER)))
+        .border_color(if active {
+            rgb(ACCENT_BLUE).into()
+        } else {
+            pal.border
+        })
+        .bg(if active {
+            pal.surface_hover
+        } else {
+            pal.surface
+        })
+        .hover(|s| s.bg(pal.surface_hover))
         .child(
             div()
                 .id(("dpi-preset-apply", idx))
                 .text_sm()
-                .text_color(rgb(if active { ACCENT_BLUE } else { TEXT_PRIMARY }))
+                .text_color(if active {
+                    rgb(ACCENT_BLUE).into()
+                } else {
+                    pal.text_primary
+                })
                 .child(format!("{value}"))
                 .on_click(move |_event, _window, cx| {
                     let target = cx
@@ -194,7 +201,7 @@ fn preset_chip(idx: usize, value: u32, active: bool, presets: &[u32]) -> AnyElem
             div()
                 .id(("dpi-preset-remove", idx))
                 .text_xs()
-                .text_color(rgb(TEXT_MUTED))
+                .text_color(pal.text_muted)
                 .child("×")
                 .on_click(move |_event, _window, cx| {
                     let mut next = presets_for_remove.clone();
@@ -209,7 +216,7 @@ fn preset_chip(idx: usize, value: u32, active: bool, presets: &[u32]) -> AnyElem
 }
 
 /// "+" chip that snapshots `AppState.dpi` as a new preset.
-fn add_preset_chip() -> AnyElement {
+fn add_preset_chip(pal: Palette) -> AnyElement {
     h_flex()
         .id("dpi-preset-add")
         .h(px(CHIP_H))
@@ -217,10 +224,10 @@ fn add_preset_chip() -> AnyElement {
         .items_center()
         .rounded_md()
         .border_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(SURFACE))
-        .hover(|s| s.bg(rgb(SURFACE_HOVER)))
-        .child(div().text_sm().text_color(rgb(TEXT_MUTED)).child("+ Add"))
+        .border_color(pal.border)
+        .bg(pal.surface)
+        .hover(|s| s.bg(pal.surface_hover))
+        .child(div().text_sm().text_color(pal.text_muted).child("+ Add"))
         .on_click(|_event, _window, cx| {
             // Append the current DPI to the active device's preset list.
             // Duplicates are allowed — the user might want the same value

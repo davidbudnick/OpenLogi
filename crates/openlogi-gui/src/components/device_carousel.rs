@@ -23,8 +23,7 @@ use openlogi_core::device::{
 
 use crate::state::AppState;
 use crate::theme::{
-    ACCENT_BLUE, BORDER, STATUS_CONNECTED, STATUS_CONNECTING, STATUS_OFFLINE, SURFACE,
-    SURFACE_HOVER, TEXT_MUTED,
+    self, ACCENT_BLUE, Palette, STATUS_CONNECTED, STATUS_CONNECTING, STATUS_OFFLINE,
 };
 
 const CARD_W: f32 = 220.;
@@ -85,6 +84,7 @@ impl Render for DeviceCarousel {
             .map_or(0, |s| s.current_device)
             .min(self.cards.len().saturating_sub(1));
         let entity = cx.entity();
+        let pal = theme::palette(cx);
 
         h_flex()
             .id("device-carousel")
@@ -95,7 +95,7 @@ impl Render for DeviceCarousel {
                 self.cards
                     .iter()
                     .enumerate()
-                    .map(|(idx, card)| card_view(idx, card, idx == selected, &entity)),
+                    .map(|(idx, card)| card_view(idx, card, idx == selected, &entity, pal)),
             )
     }
 }
@@ -105,6 +105,7 @@ fn card_view(
     card: &CardData,
     selected: bool,
     entity: &Entity<DeviceCarousel>,
+    pal: Palette,
 ) -> AnyElement {
     let battery_label = card.battery.as_ref().map(format_battery);
     let entity = entity.clone();
@@ -117,9 +118,13 @@ fn card_view(
         .py_2()
         .rounded_md()
         .border_2()
-        .border_color(rgb(if selected { ACCENT_BLUE } else { BORDER }))
-        .bg(rgb(SURFACE))
-        .hover(|s| s.bg(rgb(SURFACE_HOVER)))
+        .border_color(if selected {
+            rgb(ACCENT_BLUE).into()
+        } else {
+            pal.border
+        })
+        .bg(pal.surface)
+        .hover(|s| s.bg(pal.surface_hover))
         .on_click(move |_event, _window, cx| {
             // `set_current_device` is the authoritative path: it reloads the
             // bindings for the new device and persists the selection to
@@ -147,12 +152,12 @@ fn card_view(
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(rgb(TEXT_MUTED))
+                                .text_color(pal.text_muted)
                                 .child(card.sub.clone()),
                         ),
                 )
                 .when_some(battery_label, |this, label| {
-                    this.child(div().text_xs().text_color(rgb(TEXT_MUTED)).child(label))
+                    this.child(div().text_xs().text_color(pal.text_muted).child(label))
                 }),
         )
         .into_any_element()

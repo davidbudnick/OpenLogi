@@ -108,12 +108,6 @@ fn main() -> Result<()> {
 
     gpui_platform::application().run(move |cx| {
         gpui_component::init(cx);
-        // gpui_component::init defaults to ThemeMode::Light, but the whole
-        // app is hand-painted from theme.rs's dark palette. Without this the
-        // app's own surfaces look dark while gpui-component widgets (notably
-        // the binding Popover) render on a white theme surface — the "white
-        // popover under dark UI" mismatch. Pin dark so both agree.
-        Theme::change(ThemeMode::Dark, None, cx);
         app_menu::install(cx);
         cx.spawn(async move |cx| {
             let bounds = cx.update(|cx| Bounds::centered(None, Size::new(px(1100.), px(750.)), cx));
@@ -149,7 +143,21 @@ fn main() -> Result<()> {
                         dpi_cycle,
                     ));
                 }
+                // Match the OS appearance up front so the first paint is in
+                // the right mode (gpui_component::init defaults to Light).
+                // Both gpui-component's widgets and our hand-painted surfaces
+                // key off this — see theme::palette.
+                Theme::change(ThemeMode::from(window.appearance()), Some(window), cx);
+
                 let view = cx.new(|cx| AppView::new(&inventories, cx));
+
+                // Follow live OS light/dark switches. The subscription is
+                // parked on AppView so it lives as long as the window.
+                let appearance_obs = window.observe_window_appearance(|window, cx| {
+                    Theme::change(ThemeMode::from(window.appearance()), Some(window), cx);
+                });
+                view.update(cx, |v, _| v.set_appearance_obs(appearance_obs));
+
                 cx.new(|cx| Root::new(view, window, cx).bg(cx.theme().background))
             })
             .expect("opening the main window should not fail");

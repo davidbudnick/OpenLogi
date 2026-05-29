@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::v_flex;
 
-use crate::theme::{ACCENT_BLUE, BORDER, SURFACE, TEXT_MUTED};
+use crate::theme::{self, ACCENT_BLUE};
 
 const PAD_SIZE: f32 = 300.;
 /// Minimum start-to-end distance (px) below which we don't bother classifying
@@ -69,6 +69,7 @@ impl GesturePad {
 impl Render for GesturePad {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
+        let pal = theme::palette(cx);
         let points = self.points.clone();
         let down_entity = entity.clone();
         let move_entity = entity.clone();
@@ -84,8 +85,8 @@ impl Render for GesturePad {
                     .h(px(PAD_SIZE))
                     .rounded_md()
                     .border_1()
-                    .border_color(rgb(BORDER))
-                    .bg(rgb(SURFACE))
+                    .border_color(pal.border)
+                    .bg(pal.surface)
                     .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
                         let pos = event.position;
                         down_entity.update(cx, |this, cx| {
@@ -127,7 +128,7 @@ impl Render for GesturePad {
             .child(
                 div()
                     .text_sm()
-                    .text_color(rgb(TEXT_MUTED))
+                    .text_color(pal.text_muted)
                     .child(match self.last {
                         Some(d) => d.arrow().to_string(),
                         None => {

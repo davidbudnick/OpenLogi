@@ -1,39 +1,25 @@
-//! Color, radius, and spacing constants used by the OpenLogi UI.
+//! Colors and shared sizes for the OpenLogi UI.
 //!
-//! Centralized here so phase work doesn't drift away from the Logi Options+
-//! inspired palette. Anything pulled from `cx.theme()` still wins — these are
-//! for the bespoke surfaces (mouse model, hotspot glows, gesture pad) that
-//! aren't standard gpui-component widgets.
+//! Two layers:
+//!
+//! - **Brand / status** colours are fixed `u32` constants. They're saturated
+//!   enough to read on both light and dark backgrounds, so they don't change
+//!   with the OS appearance (the OpenLogi accent blue, the connectivity dots).
+//! - **Surface / text** colours flip with the appearance and live in
+//!   [`Palette`], chosen by [`palette`] from the active gpui-component theme
+//!   mode. The bespoke surfaces (window, cards, mouse model, gesture pad)
+//!   read these so they track the same light/dark switch as gpui-component's
+//!   own widgets — which is what keeps a popover from rendering white under
+//!   an otherwise dark UI (see `main.rs`'s appearance wiring).
 
-#![allow(
-    dead_code,
-    reason = "palette is wired up progressively across UI.md phases 1–7"
-)]
+use gpui::{App, Hsla, rgb};
+use gpui_component::ActiveTheme as _;
 
-use gpui::{Hsla, hsla, rgb};
-
-/// Window background — slightly cooler than pure black to keep accents legible.
-pub const BG_DARK: u32 = 0x001a_1a1d;
-
-/// Card / panel base.
-pub const SURFACE: u32 = 0x0022_2227;
-
-/// Card hovered state.
-pub const SURFACE_HOVER: u32 = 0x002c_2c33;
-
-/// Subtle border between cards and surface.
-pub const BORDER: u32 = 0x002f_2f36;
-
-/// Primary action / selection blue.
+/// Primary action / selection blue. Brand colour, identical in both modes —
+/// it reads on the light card surfaces and the dark window alike.
 pub const ACCENT_BLUE: u32 = 0x003b_82f6;
 
-/// Foreground.
-pub const TEXT_PRIMARY: u32 = 0x00e8_e8ec;
-
-/// De-emphasized labels / metadata.
-pub const TEXT_MUTED: u32 = 0x008a_8a93;
-
-/// Status colors for the carousel connectivity dot.
+/// Status colours for the carousel connectivity dot.
 pub const STATUS_CONNECTED: u32 = 0x0022_c55e;
 pub const STATUS_CONNECTING: u32 = 0x00ea_b308;
 pub const STATUS_OFFLINE: u32 = 0x006b_7280;
@@ -42,17 +28,67 @@ pub const STATUS_OFFLINE: u32 = 0x006b_7280;
 pub const HEADER_H: f32 = 80.;
 pub const FOOTER_H: f32 = 50.;
 
-/// Returns the canonical pulse-glow color around the accent hue.
+/// Appearance-dependent surface + text colours for the bespoke (non
+/// gpui-component) surfaces. Resolved once per render via [`palette`] and
+/// passed down to the free helper builders.
 ///
-/// `intensity` is the 0..1 amplitude factor — the shadow alpha is built from
-/// it so callers can drive a breathing curve from `with_animation`.
-#[inline]
-pub fn accent_glow(intensity: f32) -> Hsla {
-    hsla(0.6, 0.9, 0.6, 0.3 + intensity * 0.4)
+/// We hand-pick both variants rather than reading gpui-component's tokens:
+/// its shadcn-neutral palette collapses the raised-surface and hover fills
+/// onto the same neutral step (`accent` falls back to `secondary`), which
+/// would flatten the app's layered card/hover look. Keeping our own values
+/// preserves the tuned dark appearance and gives a controlled light one.
+#[derive(Clone, Copy, Debug)]
+pub struct Palette {
+    /// Window background.
+    pub bg: Hsla,
+    /// Raised card / panel fill.
+    pub surface: Hsla,
+    /// Card hover / armed fill.
+    pub surface_hover: Hsla,
+    /// Hairline border between cards and surface.
+    pub border: Hsla,
+    /// Foreground text.
+    pub text_primary: Hsla,
+    /// De-emphasised labels / metadata.
+    pub text_muted: Hsla,
 }
 
-/// Convenience wrapper so call sites don't have to import `rgb` separately.
-#[inline]
-pub fn color(hex: u32) -> impl Into<Hsla> {
-    rgb(hex)
+impl Palette {
+    /// The dark palette — the original OpenLogi look, unchanged.
+    #[must_use]
+    pub fn dark() -> Self {
+        Self {
+            bg: rgb(0x001a_1a1d).into(),
+            surface: rgb(0x0022_2227).into(),
+            surface_hover: rgb(0x002c_2c33).into(),
+            border: rgb(0x002f_2f36).into(),
+            text_primary: rgb(0x00e8_e8ec).into(),
+            text_muted: rgb(0x008a_8a93).into(),
+        }
+    }
+
+    /// The light palette — white cards on a soft-grey window, tuned to sit
+    /// alongside gpui-component's light popover/surface tokens.
+    #[must_use]
+    pub fn light() -> Self {
+        Self {
+            bg: rgb(0x00f4_f4f6).into(),
+            surface: rgb(0x00ff_ffff).into(),
+            surface_hover: rgb(0x00e9_e9ee).into(),
+            border: rgb(0x00d9_d9e0).into(),
+            text_primary: rgb(0x001a_1a1d).into(),
+            text_muted: rgb(0x006b_6b73).into(),
+        }
+    }
+}
+
+/// Resolve the app palette from the active gpui-component theme mode, so the
+/// hand-painted surfaces follow the same light/dark switch as the widgets.
+#[must_use]
+pub fn palette(cx: &App) -> Palette {
+    if cx.theme().mode.is_dark() {
+        Palette::dark()
+    } else {
+        Palette::light()
+    }
 }
