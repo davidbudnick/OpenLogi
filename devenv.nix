@@ -82,7 +82,14 @@
           cargo install cargo-bundle --locked
         fi
         bash scripts/macos-icns.sh
-        cargo run -p openlogi-cli --release -- assets sync
+        # Default: on-demand renders (lean .app, fetched at first launch).
+        # OPENLOGI_BUNDLE_ASSETS=1 bakes every device's render in (offline).
+        if [ "''${OPENLOGI_BUNDLE_ASSETS:-0}" = "1" ]; then
+          cargo run -p openlogi-cli --release -- assets sync
+        else
+          rm -rf crates/openlogi-gui/assets
+          mkdir -p crates/openlogi-gui/assets
+        fi
         cd crates/openlogi-gui
         cargo bundle --release
         echo

@@ -39,13 +39,13 @@ ureq.workspace = true
 [lints]
 workspace = true
 
-# cargo-bundle config. Run `cargo run -p openlogi-cli -- assets sync` to
-# populate `assets/` from assets.openlogi.org, then `cargo bundle
-# --release` to produce `target/release/bundle/osx/OpenLogi.app` with
-# the assets baked into `Contents/Resources/assets/`.
-#
-# `resources` paths are resolved relative to this manifest; the named
-# directory's contents are copied verbatim under `Resources/`.
+# cargo-bundle config. By default the .app ships WITHOUT device renders —
+# the app fetches only the connected device's render on first launch
+# (on-demand) into its per-user cache, keeping the bundle small. The
+# `resources` glob bundles whatever is in `assets/` at bundle time, so the
+# packaging scripts leave it empty for the default build and populate it
+# (via `assets sync`) only for an opt-in offline build
+# (OPENLOGI_BUNDLE_ASSETS=1).
 [package.metadata.bundle]
 name = "OpenLogi"
 identifier = "dev.openlogi.openlogi"
@@ -55,7 +55,7 @@ short_description = "Lightweight local-first companion for Logitech HID++ periph
 long_description = """\
 OpenLogi talks to Logitech HID++ mice and keyboards directly — no \
 cloud account, no telemetry, no auto-update poller. Plain TOML config, \
-single binary, ships with device renders bundled.
+single binary; device renders are fetched on demand on first launch.
 """
 osx_minimum_system_version = "13.0"
 # App icon. cargo-bundle copies a provided `.icns` verbatim, so we hand it

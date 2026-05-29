@@ -20,8 +20,20 @@ export SDKROOT="${SDKROOT:-$(/usr/bin/xcrun --sdk macosx --show-sdk-path)}"
 echo "==> app icon"
 "$ROOT/scripts/macos-icns.sh"
 
-echo "==> device assets"
-cargo run -p openlogi-cli --release -- assets sync
+# Device renders are fetched on demand at first launch by default (lean DMG;
+# the app pulls only the connected device's render from assets.openlogi.org
+# into its per-user cache). Set OPENLOGI_BUNDLE_ASSETS=1 for an offline build
+# that bakes every device's render into the .app instead (larger, fully
+# offline). cargo-bundle's `resources = ["assets/**/*"]` glob bundles whatever
+# is in the crate's assets/ dir at bundle time — so we populate it or empty it.
+if [ "${OPENLOGI_BUNDLE_ASSETS:-0}" = "1" ]; then
+  echo "==> device assets: bundling (offline build)"
+  cargo run -p openlogi-cli --release -- assets sync
+else
+  echo "==> device assets: on-demand (not bundled; fetched at first launch)"
+  rm -rf "$ROOT/crates/openlogi-gui/assets"
+  mkdir -p "$ROOT/crates/openlogi-gui/assets"
+fi
 
 echo "==> bundle (.app)"
 command -v cargo-bundle >/dev/null 2>&1 || cargo install cargo-bundle --locked
