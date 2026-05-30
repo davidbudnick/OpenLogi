@@ -30,7 +30,7 @@ jobs:
         id: load_secrets
         uses: 1password/load-secrets-action@v4
         with:
-          export-env: true
+          export-env: false
         env:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.OP_APPLE_SECRET_ITEM }}/APPLE_SIGNING_IDENTITY
@@ -47,41 +47,27 @@ jobs:
           cargo install cargo-bundle --locked
 
       - name: Validate release secrets
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.load_secrets.outputs.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ steps.load_secrets.outputs.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ steps.load_secrets.outputs.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ steps.load_secrets.outputs.APPLE_ID }}
+          APPLE_PASSWORD: ${{ steps.load_secrets.outputs.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ steps.load_secrets.outputs.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          : "${APPLE_SIGNING_IDENTITY:?Configure APPLE_SIGNING_IDENTITY in GitHub Secrets}"
-          : "${APPLE_CERTIFICATE:?Configure APPLE_CERTIFICATE in GitHub Secrets}"
-          : "${APPLE_CERTIFICATE_PASSWORD:?Configure APPLE_CERTIFICATE_PASSWORD in GitHub Secrets}"
-          : "${APPLE_ID:?Configure APPLE_ID in GitHub Secrets}"
-          : "${APPLE_PASSWORD:?Configure APPLE_PASSWORD in GitHub Secrets}"
-          : "${APPLE_TEAM_ID:?Configure APPLE_TEAM_ID in GitHub Secrets}"
+          : "${APPLE_SIGNING_IDENTITY:?Configure APPLE_SIGNING_IDENTITY in 1Password}"
+          : "${APPLE_CERTIFICATE:?Configure APPLE_CERTIFICATE in 1Password}"
+          : "${APPLE_CERTIFICATE_PASSWORD:?Configure APPLE_CERTIFICATE_PASSWORD in 1Password}"
+          : "${APPLE_ID:?Configure APPLE_ID in 1Password}"
+          : "${APPLE_PASSWORD:?Configure APPLE_PASSWORD in 1Password}"
+          : "${APPLE_TEAM_ID:?Configure APPLE_TEAM_ID in 1Password}"
 
       - name: Import Apple signing certificate
-        run: |
-          set -euo pipefail
-          keychain="$RUNNER_TEMP/openlogi-signing.keychain-db"
-          cert_path="$RUNNER_TEMP/openlogi-signing.p12"
-
-          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
-
-          security create-keychain -p "$RUNNER_TEMP" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$RUNNER_TEMP" "$keychain"
-          security import "$cert_path" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12 \
-            -k "$keychain"
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$RUNNER_TEMP" \
-            "$keychain"
-          security list-keychains -d user -s \
-            "$keychain" \
-            $(security list-keychains -d user | sed 's/[" ]//g')
-          security find-identity -v -p codesigning "$keychain"
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ steps.load_secrets.outputs.APPLE_CERTIFICATE }}
+          p12-password: ${{ steps.load_secrets.outputs.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Build OpenLogi.app with cargo-bundle
         run: |
@@ -100,6 +86,8 @@ jobs:
           cargo bundle --release
 
       - name: Sign app bundle
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.load_secrets.outputs.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           app="target/release/bundle/osx/OpenLogi.app"
@@ -108,6 +96,8 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
 
       - name: Create and sign DMG
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ steps.load_secrets.outputs.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           app="target/release/bundle/osx/OpenLogi.app"
