@@ -95,24 +95,15 @@ OpenLogi 通过 Logi Bolt 接收器 —— 或蓝牙直连 / 有线连接 ——
 brew install --cask aprilnea/tap/openlogi
 ```
 
-需要从源码构建请看 [DEVELOPMENT.md](DEVELOPMENT_CN.md)。
+需要从源码构建请看 [DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
 ## 用法（CLI）
 
-```sh
-openlogi list                 # 配对设备：插槽、代号、类型、在线状态、电量
-openlogi assets sync          # 预拉取 assets.openlogi.org 上的设备渲染图
-openlogi diag features        # 输出当前活动设备上报的所有 HID++ feature
-openlogi diag dpi             # 读 → 写 → 回读 → 还原 DPI（冒烟测试）
-openlogi diag smartshift      # 切换 SmartShift 并还原（冒烟测试）
-```
-
-`openlogi` 不带子命令运行时默认执行 `list`。两个二进制都可以用
-`OPENLOGI_LOG=debug` 开启详细日志。
+查看 [USAGE.md](docs/USAGE.md)
 
 ## 配置
 
-查看 [CONFIGURATION_CN.md](docs/CONFIGURATION.md)
+查看 [CONFIGURATION.md](docs/CONFIGURATION.md)
 
 ## 开发
 

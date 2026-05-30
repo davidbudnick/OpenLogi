@@ -110,20 +110,11 @@ Or install via [Homebrew](https://brew.sh):
 brew install --cask aprilnea/tap/openlogi
 ```
 
-To build from source, see [DEVELOPMENT.md](DEVELOPMENT.md).
+To build from source, see [DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Usage (CLI)
 
-```sh
-openlogi list                 # paired devices: slot, codename, kind, online, battery
-openlogi assets sync          # pre-fetch device renders from assets.openlogi.org
-openlogi diag features        # dump every HID++ feature the active device reports
-openlogi diag dpi             # read → write → read-back → restore DPI (smoke test)
-openlogi diag smartshift      # toggle SmartShift and restore (smoke test)
-```
-
-Running `openlogi` with no subcommand defaults to `list`. Set
-`OPENLOGI_LOG=debug` for verbose tracing on either binary.
+See [USAGE.md](docs/USAGE.md)
 
 ## Configuration
 
