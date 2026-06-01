@@ -5,13 +5,15 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 use openlogi_core::config::Config;
-use openlogi_core::device::DeviceInventory;
+use openlogi_core::device::{DeviceInventory, DeviceKind};
 use tracing::{info, warn};
 
 use crate::app_menu::{Minimize, Zoom};
 use crate::asset::AssetResolver;
 use crate::components::device_carousel::DeviceCarousel;
+use crate::components::device_view::device_view;
 use crate::components::dpi_panel::DpiPanel;
+use crate::components::lighting_panel::LightingPanel;
 use crate::mouse_model::view::MouseModelView;
 use crate::state::AppState;
 use crate::theme::{self, FOOTER_H, HEADER_H, Palette};
@@ -21,6 +23,7 @@ pub struct AppView {
     carousel: Entity<DeviceCarousel>,
     mouse_model: Entity<MouseModelView>,
     dpi_panel: Entity<DpiPanel>,
+    lighting_panel: Entity<LightingPanel>,
     #[allow(dead_code, reason = "held to keep the appearance observer alive")]
     appearance_obs: Option<Subscription>,
     /// Re-renders the root when the device list changes so the empty state
@@ -65,11 +68,13 @@ impl AppView {
         let carousel = cx.new(DeviceCarousel::new);
         let mouse_model = cx.new(MouseModelView::new);
         let dpi_panel = cx.new(DpiPanel::new);
+        let lighting_panel = cx.new(LightingPanel::new);
         let state_obs = cx.observe_global::<AppState>(|_, cx| cx.notify());
         Self {
             carousel,
             mouse_model,
             dpi_panel,
+            lighting_panel,
             appearance_obs: None,
             state_obs,
             accessibility_dismissed: false,
@@ -170,14 +175,19 @@ impl Render for AppView {
             return Self::accessibility_gate(pal, cx);
         }
 
+        let record = cx
+            .try_global::<AppState>()
+            .and_then(|s| s.current_record().cloned());
         let has_device = cx
             .try_global::<AppState>()
             .is_some_and(|s| !s.device_list.is_empty());
         let scanning = cx.try_global::<AppState>().is_some_and(|s| s.scanning);
-        let body = if has_device {
-            body(&self.mouse_model, &self.dpi_panel).into_any_element()
-        } else {
-            device_empty_state(pal, scanning)
+        let body = match &record {
+            Some(r) if !is_configurable_pointer(r.kind) => {
+                device_view(r, &self.lighting_panel, pal)
+            }
+            _ if has_device => body(&self.mouse_model, &self.dpi_panel).into_any_element(),
+            _ => device_empty_state(pal, scanning),
         };
 
         v_flex()
@@ -191,6 +201,13 @@ impl Render for AppView {
             .child(footer(pal, granted))
             .into_any_element()
     }
+}
+
+/// Whether a device drives the mouse model + DPI panel. Other kinds
+/// (keyboards, numpads, headsets…) get the generic device panel instead of a
+/// mouse silhouette that doesn't describe them (issue #19).
+fn is_configurable_pointer(kind: DeviceKind) -> bool {
+    matches!(kind, DeviceKind::Mouse | DeviceKind::Trackball)
 }
 
 fn header(carousel: &Entity<DeviceCarousel>, pal: Palette) -> impl IntoElement {
@@ -374,5 +391,24 @@ fn accessibility_status(pal: Palette, granted: bool) -> AnyElement {
             .child(div().child(tr!("Accessibility not granted · click to grant")))
             .on_click(|_, _, _| open_accessibility_settings())
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_configurable_pointer;
+    use openlogi_core::device::DeviceKind;
+
+    #[test]
+    fn pointer_devices_use_the_mouse_model() {
+        assert!(is_configurable_pointer(DeviceKind::Mouse));
+        assert!(is_configurable_pointer(DeviceKind::Trackball));
+    }
+
+    #[test]
+    fn other_kinds_use_the_generic_device_view() {
+        assert!(!is_configurable_pointer(DeviceKind::Keyboard));
+        assert!(!is_configurable_pointer(DeviceKind::Numpad));
+        assert!(!is_configurable_pointer(DeviceKind::Headset));
     }
 }

@@ -5,4 +5,6 @@
 //! [`crate::state::AppState`].
 
 pub mod device_carousel;
+pub mod device_view;
 pub mod dpi_panel;
+pub mod lighting_panel;

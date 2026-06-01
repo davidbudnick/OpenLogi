@@ -238,6 +238,16 @@ impl MenuItem {
         }
     }
 
+    /// Show or hide the item — used to collapse spare device rows.
+    pub(super) fn set_hidden(&self, hidden: bool) {
+        let value = if hidden { YES } else { NO };
+        unsafe {
+            // SAFETY: `self.raw()` is a valid `NSMenuItem`; `setHidden:` takes a
+            // BOOL.
+            let _: () = msg_send![self.raw(), setHidden: value];
+        }
+    }
+
     fn raw(&self) -> id {
         self.0 as id
     }

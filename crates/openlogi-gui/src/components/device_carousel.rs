@@ -8,11 +8,12 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 use openlogi_core::device::{BatteryInfo, BatteryLevel, BatteryStatus, DeviceKind};
+use openlogi_hid::DeviceRoute;
 
 use crate::state::{AppState, DeviceRecord};
 use crate::theme::{self, ACCENT_BLUE, Palette, STATUS_CONNECTED, STATUS_OFFLINE};
 
-const CARD_W: f32 = 220.;
+const CARD_W: f32 = 236.;
 const CARD_H: f32 = 64.;
 const DOT_SIZE: f32 = 10.;
 
@@ -124,16 +125,19 @@ fn card_view(
                     v_flex()
                         .gap_0p5()
                         .flex_1()
+                        .min_w_0()
                         .child(
                             div()
                                 .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
                                 .child(card.name.clone()),
                         )
                         .child(
                             div()
                                 .text_xs()
                                 .text_color(pal.text_muted)
+                                .truncate()
                                 .child(card.sub.clone()),
                         ),
                 )
@@ -170,9 +174,22 @@ fn status_dot(status: Status) -> AnyElement {
 }
 
 fn card_from_record(r: &DeviceRecord) -> CardData {
+    let wired = matches!(&r.route, Some(DeviceRoute::Direct { .. }));
+    // Wired G-series keyboards come in through the direct path as `Unknown`;
+    // present them as keyboards rather than the generic "Device".
+    let kind = if wired && r.kind == DeviceKind::Unknown {
+        "Keyboard"
+    } else {
+        kind_label(r.kind)
+    };
+    let connection = if wired {
+        "Wired".to_string()
+    } else {
+        format!("slot {}", r.slot)
+    };
     CardData {
         name: r.display_name.clone(),
-        sub: format!("{} · slot {}", kind_label(r.kind), r.slot),
+        sub: format!("{kind} · {connection}"),
         status: if r.online {
             Status::Connected
         } else {

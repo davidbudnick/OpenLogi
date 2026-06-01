@@ -30,7 +30,7 @@ pub struct DeviceRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum DeviceStableId {
+pub(super) enum DeviceStableId {
     Bolt {
         receiver_uid: String,
         slot: u8,
@@ -47,7 +47,7 @@ enum DeviceStableId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum DeviceIdentity {
+pub(super) enum DeviceIdentity {
     Serial(String),
     Unit([u8; 4]),
 }
@@ -82,6 +82,10 @@ pub(super) fn build_device_list(
                 battery: paired.battery.clone(),
             });
         }
+    }
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPENLOGI_DEMO_KEYBOARD").is_some() {
+        list.push(demo_keyboard());
     }
     sort_device_list(&mut list);
     list
@@ -134,6 +138,25 @@ impl DeviceIdentity {
             || Self::Unit(record.unit_id),
             |serial| Self::Serial(serial.to_ascii_lowercase()),
         )
+    }
+}
+
+/// Dev-only synthetic keyboard so the keyboard detail panel + lighting controls
+/// render without the hardware. Gated behind the `OPENLOGI_DEMO_KEYBOARD` env
+/// var (debug builds only); `route: None` keeps every hardware write a no-op.
+#[cfg(debug_assertions)]
+fn demo_keyboard() -> DeviceRecord {
+    DeviceRecord {
+        config_key: "demo-g513".to_string(),
+        display_name: "Logitech G513".to_string(),
+        asset: None,
+        serial_number: None,
+        unit_id: [0; 4],
+        route: None,
+        kind: DeviceKind::Keyboard,
+        slot: 0,
+        online: true,
+        battery: None,
     }
 }
 

@@ -31,19 +31,25 @@ const LOGITECH_VID: u16 = 0x046d;
 /// - `0xFF43 / 0x0202` — Bluetooth-*Low-Energy* directly-paired devices
 ///   (e.g. the Logitech Lift / Signature mice). Same HID++ protocol, just a
 ///   different vendor page on the BLE HID report descriptor.
+/// - `0xFF43 / 0x0602` — wired G-series gaming keyboards (e.g. the G513): a
+///   distinct vendor collection on the same `0xFF43` page. Carries both report
+///   widths, so it is not long-only.
 ///
 /// `long_only` marks a transport that exposes *only* the long report — no
 /// short-report (`0x10`) collection — so short HID++ requests must be
-/// up-converted to long (handled by the `hidpp` channel). BLE-direct devices on macOS
-/// are long-only; USB / receiver devices carry both. Keeping the flag in this
-/// table means a new long-only transport is a single-line addition here, with
-/// no second site to update.
+/// up-converted to long (handled by the `hidpp` channel). BLE-direct devices on
+/// macOS are long-only; USB / receiver / wired-keyboard devices carry both.
+/// Keeping the flag in this table means a new long-only transport is a
+/// single-line addition here, with no second site to update.
 ///
 /// Filtering on these pairs gives us one HID node per physical HID++ device on
 /// every supported OS, without reading report descriptors (`async-hid 0.4`
 /// only exposes those on Linux).
-const HIDPP_LONG_COLLECTIONS: [(u16, u16, bool); 2] =
-    [(0xff00, 0x0002, false), (0xff43, 0x0202, true)];
+const HIDPP_LONG_COLLECTIONS: [(u16, u16, bool); 3] = [
+    (0xff00, 0x0002, false),
+    (0xff43, 0x0202, true),
+    (0xff43, 0x0602, false),
+];
 
 /// Whether `(usage_page, usage_id)` is one of the HID++ long-report collections.
 fn is_hidpp_long_collection(usage_page: u16, usage_id: u16) -> bool {
@@ -86,6 +92,30 @@ pub(crate) async fn enumerate_hidpp_devices() -> Result<Vec<async_hid::Device>, 
             d.vendor_id == LOGITECH_VID && is_hidpp_long_collection(d.usage_page, d.usage_id)
         })
         .collect())
+}
+
+/// Open the raw HID writer for a directly-attached (USB) device, for sending
+/// reports the HID++ wrapper can't model — e.g. the 64-byte `0x12` lighting
+/// frames G-series keyboards use. Returns `None` for Bolt routes or when no
+/// matching node is connected.
+pub(crate) async fn open_route_writer(
+    route: &crate::route::DeviceRoute,
+) -> Result<Option<DeviceWriter>, async_hid::HidError> {
+    let crate::route::DeviceRoute::Direct {
+        vendor_id,
+        product_id,
+    } = route
+    else {
+        return Ok(None);
+    };
+    let candidates = enumerate_hidpp_devices().await?;
+    for dev in candidates {
+        if dev.vendor_id == *vendor_id && dev.product_id == *product_id {
+            let (_reader, writer) = dev.open().await?;
+            return Ok(Some(writer));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) async fn open_hidpp_channel(
@@ -176,9 +206,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_both_usb_and_ble_hidpp_collections() {
+    fn matches_usb_ble_and_keyboard_hidpp_collections() {
         assert!(is_hidpp_long_collection(0xff00, 0x0002)); // USB / receiver / BT-classic
         assert!(is_hidpp_long_collection(0xff43, 0x0202)); // BLE-direct (Lift, Signature)
+        assert!(is_hidpp_long_collection(0xff43, 0x0602)); // wired G-series keyboard (G513)
         assert!(!is_hidpp_long_collection(0x0001, 0x0002)); // generic-desktop mouse
         assert!(!is_hidpp_long_collection(0xff43, 0x0002)); // page right, usage wrong
     }
@@ -187,6 +218,7 @@ mod tests {
     fn only_ble_collection_is_long_only() {
         assert!(is_long_only_collection(0xff43, 0x0202)); // BLE-direct → short-unsupported
         assert!(!is_long_only_collection(0xff00, 0x0002)); // USB / receiver carries both reports
+        assert!(!is_long_only_collection(0xff43, 0x0602)); // wired G-series keyboard carries both
         assert!(!is_long_only_collection(0x0001, 0x0002)); // not a HID++ collection at all
     }
 }

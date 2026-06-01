@@ -12,6 +12,7 @@ use openlogi_hid::DeviceRoute;
 
 pub mod dpi;
 pub mod features;
+pub mod lighting;
 pub mod smartshift;
 
 #[derive(Debug, Subcommand)]
@@ -22,6 +23,8 @@ pub enum DiagCmd {
     Dpi(dpi::DpiArgs),
     /// Read SmartShift mode → toggle → read back → toggle back → report.
     Smartshift(smartshift::SmartshiftArgs),
+    /// Set a wired RGB keyboard to a solid colour (e.g. `ff0000` for red).
+    Lighting(lighting::LightingArgs),
 }
 
 impl DiagCmd {
@@ -30,6 +33,7 @@ impl DiagCmd {
             Self::Features(args) => features::run(args).await,
             Self::Dpi(args) => dpi::run(args).await,
             Self::Smartshift(args) => smartshift::run(args).await,
+            Self::Lighting(args) => lighting::run(args).await,
         }
     }
 }

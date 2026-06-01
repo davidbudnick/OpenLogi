@@ -9,6 +9,7 @@
 
 use std::sync::Arc;
 
+use async_hid::AsyncHidWrite;
 use hidpp::{
     channel::HidppChannel,
     device::Device,
@@ -305,6 +306,89 @@ pub async fn set_dpi(route: &DeviceRoute, dpi: u16) -> Result<(), WriteError> {
         set_dpi_on_channel(&channel, index, dpi).await
     })
     .await
+}
+
+/// HID++ `PerKeyLighting` feature — drives the per-key RGB on wired G-series
+/// keyboards. Its feature *index* varies per device, so it's resolved at runtime.
+const PER_KEY_LIGHTING_FEATURE: u16 = 0x8080;
+
+/// Set a keyboard's per-key RGB to a solid `(r, g, b)` colour via HID++
+/// `PerKeyLighting` (`0x8080`): stream every key's colour in 64-byte `0x12`
+/// "set group keys" frames, then commit the frame.
+///
+/// The `0x8080` feature index is resolved per device (it differs across the
+/// G-series), so this isn't tied to the G513. `FeatureUnsupported` when the
+/// device exposes no `0x8080` (e.g. a non-RGB peripheral).
+pub async fn set_keyboard_color(
+    route: &DeviceRoute,
+    r: u8,
+    g: u8,
+    b: u8,
+) -> Result<(), WriteError> {
+    // Resolve this device's runtime feature index for 0x8080 over the HID++
+    // channel; the per-key frames are then sent as raw 0x12 reports (which the
+    // typed channel can't model) on a freshly opened writer.
+    let device_index = route.device_index();
+    let feature_index = with_route(route, move |channel| async move {
+        let device = Device::new(Arc::clone(&channel), device_index)
+            .await
+            .map_err(|_| WriteError::DeviceUnreachable {
+                index: device_index,
+            })?;
+        let info = device
+            .root()
+            .get_feature(PER_KEY_LIGHTING_FEATURE)
+            .await
+            .map_err(|e| WriteError::Hidpp(format!("{e:?}")))?
+            .ok_or(WriteError::FeatureUnsupported {
+                feature_hex: PER_KEY_LIGHTING_FEATURE,
+            })?;
+        Ok(info.index)
+    })
+    .await?;
+
+    let Some(mut writer) = crate::transport::open_route_writer(route).await? else {
+        return Err(WriteError::DeviceNotFound);
+    };
+    // Each 64-byte `0x12` "set group keys" packet carries up to 14
+    // `(keyID, R, G, B)` entries; keyIDs are HID usage codes. Cover the whole
+    // keyboard usage range (incl. modifiers at `0xe0..`) so every key lights,
+    // then commit the frame.
+    let key_ids: Vec<u8> = (0x00u8..=0xe8).collect();
+    for chunk in key_ids.chunks(14) {
+        let mut rep = vec![0u8; 64];
+        rep[0] = 0x12;
+        rep[1] = device_index;
+        rep[2] = feature_index;
+        rep[3] = 0x3a;
+        rep[5] = 0x01;
+        rep[7] = 0x0e;
+        for (i, &key) in chunk.iter().enumerate() {
+            let off = 8 + i * 4;
+            rep[off] = key;
+            rep[off + 1] = r;
+            rep[off + 2] = g;
+            rep[off + 3] = b;
+        }
+        writer
+            .write_output_report(&rep)
+            .await
+            .map_err(WriteError::Hid)?;
+    }
+    let mut commit = vec![0u8; 20];
+    commit[0] = 0x11;
+    commit[1] = device_index;
+    commit[2] = feature_index;
+    commit[3] = 0x5a;
+    writer
+        .write_output_report(&commit)
+        .await
+        .map_err(WriteError::Hid)?;
+    debug!(
+        device_index,
+        feature_index, r, g, b, "wrote keyboard colour"
+    );
+    Ok(())
 }
 
 /// The DPI write itself, on an already-open channel at HID++ `index`. Shared by

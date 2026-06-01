@@ -12,7 +12,7 @@
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    TrayEvent, hide_from_dock, install, refresh_labels, request_refresh, set_device_status,
+    TrayEvent, hide_from_dock, install, refresh_labels, request_refresh, set_device_lines,
     set_visible, show_in_dock,
 };
 
@@ -49,9 +49,12 @@ mod macos {
     /// Stored as opaque menu-item handles; only touched on the main thread.
     static MENU_REFS: OnceLock<MenuRefs> = OnceLock::new();
 
-    /// The device-status line item, written by [`set_device_status`]. Only ever
-    /// touched on the main thread.
-    static DEVICE_ITEM: OnceLock<MenuItem> = OnceLock::new();
+    /// How many device rows the tray menu can show at once.
+    const MAX_DEVICE_ROWS: usize = 8;
+
+    /// The device-status line items, written by [`set_device_lines`] — one per
+    /// connected device, spare rows hidden. Only ever touched on the main thread.
+    static DEVICE_ITEMS: OnceLock<Vec<MenuItem>> = OnceLock::new();
 
     /// The `NSStatusItem` itself, so [`set_visible`] can show / hide the icon.
     static STATUS_ITEM: OnceLock<StatusItem> = OnceLock::new();
@@ -64,7 +67,7 @@ mod macos {
     struct InstalledMenu {
         menu: Menu,
         refs: MenuRefs,
-        device_item: MenuItem,
+        device_items: Vec<MenuItem>,
     }
 
     /// Install the status item. Main thread only.
@@ -83,7 +86,7 @@ mod macos {
         status_item.set_symbol_icon("computermouse.fill", "OpenLogi", "OpenLogi");
 
         let installed_menu = build_menu();
-        let _ = DEVICE_ITEM.set(installed_menu.device_item);
+        let _ = DEVICE_ITEMS.set(installed_menu.device_items);
         let _ = MENU_REFS.set(installed_menu.refs);
         status_item.set_menu(installed_menu.menu);
     }
@@ -93,8 +96,18 @@ mod macos {
         let menu = Menu::new();
 
         let idle = rust_i18n::t!("No devices connected");
-        let device_item = MenuItem::disabled(&idle);
-        menu.add_item(device_item);
+        let mut device_items = Vec::with_capacity(MAX_DEVICE_ROWS);
+        for i in 0..MAX_DEVICE_ROWS {
+            let label = if i == 0 {
+                idle.to_string()
+            } else {
+                String::new()
+            };
+            let item = MenuItem::disabled(&label);
+            item.set_hidden(i != 0);
+            menu.add_item(item);
+            device_items.push(item);
+        }
 
         menu.add_separator();
 
@@ -113,7 +126,7 @@ mod macos {
                 open: open_item,
                 quit: quit_item,
             },
-            device_item,
+            device_items,
         }
     }
 
@@ -148,18 +161,38 @@ mod macos {
         item.set_visible(visible);
     }
 
-    /// Update the device line, e.g. `"MX Master 3S · 80%"`. Main thread only.
-    /// A no-op until [`install`] has published the item.
-    pub fn set_device_status(text: &str) {
-        let Some(item) = DEVICE_ITEM.get() else {
+    /// Update the device rows — one per connected device (e.g.
+    /// `"MX Master 3S · 80%"`, `"G513 Carbon GX Blue"`). Spare rows are hidden;
+    /// an empty list shows the "No devices connected" placeholder. Main-thread
+    /// only, and a no-op until [`install`] has published the items.
+    pub fn set_device_lines(lines: &[String]) {
+        let Some(items) = DEVICE_ITEMS.get() else {
             return;
         };
-        item.set_title(text);
+        if lines.is_empty() {
+            let idle = rust_i18n::t!("No devices connected");
+            if let Some(first) = items.first() {
+                first.set_title(&idle);
+                first.set_hidden(false);
+            }
+            for item in items.iter().skip(1) {
+                item.set_hidden(true);
+            }
+            return;
+        }
+        for (i, item) in items.iter().enumerate() {
+            if let Some(line) = lines.get(i) {
+                item.set_title(line);
+                item.set_hidden(false);
+            } else {
+                item.set_hidden(true);
+            }
+        }
     }
 
     /// Re-title the Open/Quit items for the current locale. Main-thread only,
-    /// like every status-item write. The device line is refreshed separately via
-    /// [`set_device_status`].
+    /// like every status-item write. The device rows are refreshed separately via
+    /// [`set_device_lines`].
     pub fn refresh_labels() {
         let Some(refs) = MENU_REFS.get() else {
             return;

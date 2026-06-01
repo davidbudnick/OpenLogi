@@ -14,6 +14,7 @@
 
 use std::time::Duration;
 
+use openlogi_core::config::Lighting;
 use openlogi_hid::{CaptureChannel, DeviceRoute, DpiInfo, SharedChannel, WriteError};
 use tracing::{debug, warn};
 
@@ -152,4 +153,51 @@ pub fn write_dpi_in_background(
             ),
         }
     });
+}
+
+/// Apply `lighting` to the keyboard at `target` on a background thread.
+///
+/// Resolves the configured colour (scaled by brightness, or black when the
+/// lighting is off) and writes every key over HID++ via
+/// [`openlogi_hid::set_keyboard_color`]. A `None` target is a no-op (dev runs
+/// without a device); failures are logged, not surfaced.
+pub fn set_lighting_in_background(target: Option<DeviceRoute>, lighting: &Lighting) {
+    let Some(target) = target else {
+        debug!("no target device — lighting write skipped");
+        return;
+    };
+    let (r, g, b) = if lighting.enabled {
+        let (r, g, b) = parse_hex(&lighting.color);
+        let scale =
+            |c: u8| u8::try_from(u16::from(c) * u16::from(lighting.brightness) / 100).unwrap_or(c);
+        (scale(r), scale(g), scale(b))
+    } else {
+        (0, 0, 0)
+    };
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                warn!(error = %e, "tokio runtime init failed; lighting write skipped");
+                return;
+            }
+        };
+        match rt.block_on(openlogi_hid::set_keyboard_color(&target, r, g, b)) {
+            Ok(()) => debug!(r, g, b, "lighting written to keyboard"),
+            Err(e) => warn!(error = ?e, "lighting write failed"),
+        }
+    });
+}
+
+/// Parse `"RRGGBB"` (optionally `#`-prefixed) into an `(r, g, b)` triple.
+fn parse_hex(hex: &str) -> (u8, u8, u8) {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0);
+    (
+        u8::try_from((v >> 16) & 0xff).unwrap_or(0),
+        u8::try_from((v >> 8) & 0xff).unwrap_or(0),
+        u8::try_from(v & 0xff).unwrap_or(0),
+    )
 }

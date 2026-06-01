@@ -123,6 +123,55 @@ fn default_true() -> bool {
     true
 }
 
+/// Per-device RGB lighting: a single static color, brightness, and on/off.
+/// Deliberately basic — per-key effects are a later addition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lighting {
+    #[serde(default = "default_lighting_enabled")]
+    pub enabled: bool,
+    /// Static color as 6 hex digits `"RRGGBB"` (no leading `#`).
+    #[serde(default = "default_lighting_color")]
+    pub color: String,
+    /// Brightness percent, clamped to 0–100 on load.
+    #[serde(
+        default = "default_lighting_brightness",
+        deserialize_with = "deserialize_brightness"
+    )]
+    pub brightness: u8,
+}
+
+impl Default for Lighting {
+    fn default() -> Self {
+        Self {
+            enabled: default_lighting_enabled(),
+            color: default_lighting_color(),
+            brightness: default_lighting_brightness(),
+        }
+    }
+}
+
+fn default_lighting_enabled() -> bool {
+    true
+}
+
+fn default_lighting_color() -> String {
+    "ffffff".to_string()
+}
+
+fn default_lighting_brightness() -> u8 {
+    100
+}
+
+/// Clamp a deserialized brightness into the UI's `0..=100` range, so a
+/// hand-edited `config.toml` can't feed out-of-range values into the scaling
+/// math (which assumes `brightness <= 100`).
+fn deserialize_brightness<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u8::deserialize(deserializer)?.min(100))
+}
+
 /// Settings scoped to a single physical device (keyed by HID++ model+ext).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DeviceConfig {
@@ -146,6 +195,10 @@ pub struct DeviceConfig {
     /// the cycle action becomes a no-op until the user adds at least one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dpi_presets: Vec<u32>,
+    /// Per-device RGB lighting (static color + brightness + on/off). `None`
+    /// until the user changes it, so it stays out of `config.toml` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<Lighting>,
 }
 
 #[derive(Debug, Error)]
@@ -361,6 +414,22 @@ impl Config {
             .or_default()
             .dpi_presets = presets;
     }
+
+    /// The lighting config for `device_key`, or `None` if unset.
+    #[must_use]
+    pub fn lighting(&self, device_key: &str) -> Option<Lighting> {
+        self.devices
+            .get(device_key)
+            .and_then(|d| d.lighting.clone())
+    }
+
+    /// Replace the lighting config for `device_key`.
+    pub fn set_lighting(&mut self, device_key: &str, lighting: Lighting) {
+        self.devices
+            .entry(device_key.to_string())
+            .or_default()
+            .lighting = Some(lighting);
+    }
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -411,6 +480,29 @@ mod tests {
         let cfg = Config::load_from_path(&path).expect("load");
         assert_eq!(cfg.schema_version, SCHEMA_VERSION);
         assert!(cfg.devices.is_empty());
+    }
+
+    #[test]
+    fn lighting_roundtrips_per_device() {
+        let mut cfg = Config::default();
+        cfg.set_lighting(
+            "g513",
+            Lighting {
+                enabled: true,
+                color: "00aabb".to_string(),
+                brightness: 75,
+            },
+        );
+        let restored = write_and_read(&cfg);
+        assert_eq!(
+            restored.lighting("g513"),
+            Some(Lighting {
+                enabled: true,
+                color: "00aabb".to_string(),
+                brightness: 75,
+            })
+        );
+        assert_eq!(restored.lighting("absent"), None);
     }
 
     #[test]

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use gpui::Global;
-use openlogi_core::config::{AppSettings, Config};
+use openlogi_core::config::{AppSettings, Config, Lighting};
 use openlogi_core::device::DeviceInventory;
 use openlogi_hid::{DeviceRoute, DpiCapabilities, DpiInfo, WriteError};
 use openlogi_hook::Hook;
@@ -586,6 +586,30 @@ impl AppState {
     pub fn normalize_active_dpi(&self, dpi: u32) -> u32 {
         self.active_dpi_capabilities()
             .map_or(dpi, |caps| caps.snap(dpi))
+    }
+
+    /// The lighting config for the active device, or the default when none is
+    /// stored / no device is selected.
+    #[must_use]
+    pub fn lighting(&self) -> Lighting {
+        self.current_record()
+            .and_then(|r| self.config.lighting(&r.config_key))
+            .unwrap_or_default()
+    }
+
+    /// Persist a new lighting config for the active device and push it to the
+    /// hardware (best-effort). No-op when no device is selected.
+    pub fn commit_lighting(&mut self, lighting: Lighting) {
+        let Some(key) = self.current_record().map(|r| r.config_key.clone()) else {
+            debug!("no active device key — lighting kept in memory only");
+            return;
+        };
+        let target = self.current_record().and_then(|r| r.route.clone());
+        crate::hardware::set_lighting_in_background(target, &lighting);
+        self.config.set_lighting(&key, lighting);
+        if let Err(e) = self.config.save_atomic() {
+            warn!(error = %e, "could not persist lighting to config.toml");
+        }
     }
 
     /// App-wide settings backing the Settings window (launch-at-login,
