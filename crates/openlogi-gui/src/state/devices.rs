@@ -1,5 +1,6 @@
 //! Device-list construction and selection helpers for [`super::AppState`].
 
+use openlogi_camera::Camera;
 use openlogi_core::device::{BatteryInfo, DeviceInventory, DeviceKind};
 use openlogi_hid::{DIRECT_DEVICE_INDEX, DeviceRoute};
 
@@ -83,8 +84,35 @@ pub(super) fn build_device_list(
             });
         }
     }
+
+    // Cameras are UVC, not HID++ — append them from the parallel discovery path
+    // (see the openlogi-camera crate) so the StreamCam and any other Logitech
+    // webcam appears in the carousel alongside mice and keyboards.
+    for camera in openlogi_camera::enumerate_cameras() {
+        list.push(camera_record(&camera));
+    }
+
     sort_device_list(&mut list);
     list
+}
+
+/// Build a [`DeviceRecord`] for a UVC camera. Cameras carry no HID++ route, so
+/// `route` is `None` (hardware writes are skipped) and the config key is derived
+/// from the OS unique id — that keeps two identical cameras distinct and lets a
+/// camera's per-device settings survive a reconnect.
+fn camera_record(camera: &Camera) -> DeviceRecord {
+    DeviceRecord {
+        config_key: format!("camera-{}", camera.unique_id),
+        display_name: camera.name.clone(),
+        asset: None,
+        serial_number: Some(camera.unique_id.clone()),
+        unit_id: [0; 4],
+        route: None,
+        kind: DeviceKind::Camera,
+        slot: 0,
+        online: true,
+        battery: None,
+    }
 }
 
 /// Order the carousel by physical route. HID enumeration order can change as

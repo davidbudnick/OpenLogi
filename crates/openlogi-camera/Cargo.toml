@@ -1,0 +1,34 @@
+[package]
+name = "openlogi-camera"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Generic Logitech UVC webcam discovery for OpenLogi (AVFoundation on macOS)."
+keywords = ["logitech", "uvc", "webcam", "camera", "avfoundation"]
+categories = ["hardware-support"]
+
+[dependencies]
+serde = { workspace = true }
+tracing = { workspace = true }
+
+# AVFoundation (AVCaptureDevice) enumeration — same objc 0.2 toolchain the GUI's
+# menu-bar / permission FFI uses, so it's already proven in this workspace.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+# Mirrors [workspace.lints], but allows the legacy `cfg(cargo-clippy)` check the
+# objc 0.2 macros emit (same as openlogi-gui / openlogi-hook). unsafe_code stays
+# denied; the AVFoundation module opts in locally with #[expect(unsafe_code)].
+[lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "allow", check-cfg = [] }
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+missing_errors_doc = "allow"
+doc_markdown = "allow"

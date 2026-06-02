@@ -5,12 +5,13 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 use openlogi_core::config::Config;
-use openlogi_core::device::DeviceInventory;
+use openlogi_core::device::{DeviceInventory, DeviceKind};
 use tracing::{info, warn};
 
 use crate::app_menu::{Minimize, Zoom};
 use crate::asset::AssetResolver;
 use crate::components::device_carousel::DeviceCarousel;
+use crate::components::device_view::device_view;
 use crate::components::dpi_panel::DpiPanel;
 use crate::mouse_model::view::MouseModelView;
 use crate::state::AppState;
@@ -170,14 +171,19 @@ impl Render for AppView {
             return Self::accessibility_gate(pal, cx);
         }
 
+        let record = cx
+            .try_global::<AppState>()
+            .and_then(|s| s.current_record().cloned());
         let has_device = cx
             .try_global::<AppState>()
             .is_some_and(|s| !s.device_list.is_empty());
         let scanning = cx.try_global::<AppState>().is_some_and(|s| s.scanning);
-        let body = if has_device {
-            body(&self.mouse_model, &self.dpi_panel).into_any_element()
-        } else {
-            device_empty_state(pal, scanning)
+        // A camera (or other non-pointer device) gets the generic detail panel;
+        // mice/trackballs keep the mouse model + DPI panel.
+        let body = match &record {
+            Some(r) if !is_configurable_pointer(r.kind) => device_view(r, pal),
+            _ if has_device => body(&self.mouse_model, &self.dpi_panel).into_any_element(),
+            _ => device_empty_state(pal, scanning),
         };
 
         v_flex()
@@ -191,6 +197,13 @@ impl Render for AppView {
             .child(footer(pal, granted))
             .into_any_element()
     }
+}
+
+/// Whether a device drives the mouse model + DPI panel. Other kinds (cameras,
+/// keyboards, headsets…) get the generic [`device_view`] panel instead of a
+/// mouse silhouette that doesn't describe them.
+fn is_configurable_pointer(kind: DeviceKind) -> bool {
+    matches!(kind, DeviceKind::Mouse | DeviceKind::Trackball)
 }
 
 fn header(carousel: &Entity<DeviceCarousel>, pal: Palette) -> impl IntoElement {
@@ -374,5 +387,24 @@ fn accessibility_status(pal: Palette, granted: bool) -> AnyElement {
             .child(div().child(tr!("Accessibility not granted · click to grant")))
             .on_click(|_, _, _| open_accessibility_settings())
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_configurable_pointer;
+    use openlogi_core::device::DeviceKind;
+
+    #[test]
+    fn pointer_devices_use_the_mouse_model() {
+        assert!(is_configurable_pointer(DeviceKind::Mouse));
+        assert!(is_configurable_pointer(DeviceKind::Trackball));
+    }
+
+    #[test]
+    fn cameras_and_other_kinds_use_the_generic_device_view() {
+        assert!(!is_configurable_pointer(DeviceKind::Camera));
+        assert!(!is_configurable_pointer(DeviceKind::Keyboard));
+        assert!(!is_configurable_pointer(DeviceKind::Headset));
     }
 }

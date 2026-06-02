@@ -22,6 +22,10 @@ pub enum DeviceKind {
     Gamepad,
     Joystick,
     Headset,
+    /// A USB Video Class webcam. Unlike the others this isn't a HID++ kind —
+    /// cameras are discovered over UVC (see the `openlogi-camera` crate), not
+    /// through a Bolt receiver.
+    Camera,
     Unknown,
 }
 

@@ -28,6 +28,7 @@ pub enum Permission {
     Accessibility,
     InputMonitoring,
     Bluetooth,
+    Camera,
 }
 
 /// Current Input Monitoring ("listen event") status.
@@ -44,6 +45,15 @@ pub fn bluetooth() -> PermissionStatus {
     macos::bluetooth()
 }
 
+/// Current Camera (AVFoundation) authorization status. Enumerating cameras
+/// doesn't need this — capturing a preview will, so it's surfaced alongside the
+/// other permissions.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn camera() -> PermissionStatus {
+    macos::camera()
+}
+
 #[cfg(not(target_os = "macos"))]
 #[must_use]
 pub fn input_monitoring() -> PermissionStatus {
@@ -53,6 +63,12 @@ pub fn input_monitoring() -> PermissionStatus {
 #[cfg(not(target_os = "macos"))]
 #[must_use]
 pub fn bluetooth() -> PermissionStatus {
+    PermissionStatus::Unknown
+}
+
+#[cfg(not(target_os = "macos"))]
+#[must_use]
+pub fn camera() -> PermissionStatus {
     PermissionStatus::Unknown
 }
 
@@ -68,6 +84,7 @@ pub fn open_pane(permission: Permission) {
         Permission::Accessibility => "Privacy_Accessibility",
         Permission::InputMonitoring => "Privacy_ListenEvent",
         Permission::Bluetooth => "Privacy_Bluetooth",
+        Permission::Camera => "Privacy_Camera",
     };
     let url = format!("x-apple.systempreferences:com.apple.preference.security?{anchor}");
     if let Err(e) = std::process::Command::new("open").arg(&url).spawn() {
@@ -82,10 +99,10 @@ pub fn open_pane(_permission: Permission) {}
 mod macos {
     #![expect(
         unsafe_code,
-        reason = "IOKit (IOHIDCheckAccess) + CoreBluetooth privacy-permission FFI"
+        reason = "IOKit (IOHIDCheckAccess) + CoreBluetooth + AVFoundation privacy-permission FFI"
     )]
 
-    use objc::runtime::Class;
+    use objc::runtime::{Class, Object};
     use objc::{msg_send, sel, sel_impl};
 
     use super::PermissionStatus;
@@ -103,6 +120,13 @@ mod macos {
     // to `Unknown` rather than panicking if it somehow isn't).
     #[link(name = "CoreBluetooth", kind = "framework")]
     unsafe extern "C" {}
+
+    // `AVMediaTypeVideo` is an NSString constant exported by AVFoundation; the
+    // framework must be linked for it and the `AVCaptureDevice` class to resolve.
+    #[link(name = "AVFoundation", kind = "framework")]
+    unsafe extern "C" {
+        static AVMediaTypeVideo: *const Object;
+    }
 
     const REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
 
@@ -128,6 +152,25 @@ mod macos {
         // SAFETY: sending a documented class method that returns an NSInteger.
         let authorization: isize = unsafe { msg_send![cls, authorization] };
         match authorization {
+            3 => PermissionStatus::Granted,
+            1 | 2 => PermissionStatus::Denied,
+            _ => PermissionStatus::Unknown,
+        }
+    }
+
+    pub(super) fn camera() -> PermissionStatus {
+        // `+[AVCaptureDevice authorizationStatusForMediaType:]` returns an
+        // `AVAuthorizationStatus`: notDetermined = 0, restricted = 1, denied = 2,
+        // authorized = 3. As in `bluetooth()`, `Class::get` lets a missing class
+        // degrade to `Unknown` instead of panicking.
+        let Some(cls) = Class::get("AVCaptureDevice") else {
+            return PermissionStatus::Unknown;
+        };
+        // SAFETY: documented class method taking an AVMediaType (NSString) and
+        // returning an NSInteger; `AVMediaTypeVideo` resolves once AVFoundation links.
+        let status: isize =
+            unsafe { msg_send![cls, authorizationStatusForMediaType: AVMediaTypeVideo] };
+        match status {
             3 => PermissionStatus::Granted,
             1 | 2 => PermissionStatus::Denied,
             _ => PermissionStatus::Unknown,

@@ -25,6 +25,7 @@ members = [
     "crates/openlogi-core",
     "crates/openlogi-hidpp",
     "crates/openlogi-hid",
+    "crates/openlogi-camera",
     "crates/openlogi-assets",
     "crates/openlogi-cli",
     "crates/openlogi-gui",

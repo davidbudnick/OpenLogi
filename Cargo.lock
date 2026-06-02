@@ -4458,12 +4458,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "openlogi-camera"
+version = "0.4.0"
+dependencies = [
+ "objc",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "openlogi-cli"
 version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
  "openlogi-assets",
+ "openlogi-camera",
  "openlogi-core",
  "openlogi-hid",
  "tokio",
@@ -4498,6 +4508,7 @@ dependencies = [
  "gpui_platform",
  "objc",
  "openlogi-assets",
+ "openlogi-camera",
  "openlogi-core",
  "openlogi-hid",
  "openlogi-hook",

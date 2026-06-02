@@ -170,9 +170,16 @@ fn status_dot(status: Status) -> AnyElement {
 }
 
 fn card_from_record(r: &DeviceRecord) -> CardData {
+    // Cameras come in over UVC with no HID++ slot, so "slot 0" would be
+    // meaningless — show the connection type instead.
+    let sub = if matches!(r.kind, DeviceKind::Camera) {
+        format!("{} · USB", kind_label(r.kind))
+    } else {
+        format!("{} · slot {}", kind_label(r.kind), r.slot)
+    };
     CardData {
         name: r.display_name.clone(),
-        sub: format!("{} · slot {}", kind_label(r.kind), r.slot),
+        sub,
         status: if r.online {
             Status::Connected
         } else {
@@ -225,6 +232,7 @@ fn kind_label(kind: DeviceKind) -> &'static str {
         DeviceKind::Gamepad => "Gamepad",
         DeviceKind::Joystick => "Joystick",
         DeviceKind::Headset => "Headset",
+        DeviceKind::Camera => "Camera",
         DeviceKind::Unknown => "Device",
     }
 }

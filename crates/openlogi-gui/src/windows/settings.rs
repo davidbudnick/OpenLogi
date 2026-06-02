@@ -318,6 +318,15 @@ fn permissions_group(pal: Palette, cx: &mut Context<SettingsView>) -> impl IntoE
             pal,
             cx,
         ))
+        .child(permission_row(
+            "perm-camera",
+            tr!("Camera"),
+            tr!("Lets OpenLogi detect your Logitech webcam — and preview it, once enabled."),
+            permissions::camera(),
+            Permission::Camera,
+            pal,
+            cx,
+        ))
 }
 
 /// A coloured status word for a permission row.

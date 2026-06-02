@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
+use openlogi_camera::Camera;
 use openlogi_core::device::{BatteryInfo, DeviceInventory, DeviceModelInfo, PairedDevice};
 
 #[derive(Debug, Args)]
@@ -9,20 +10,11 @@ pub async fn run(_args: ListArgs) -> Result<()> {
     let inventories = openlogi_hid::enumerate()
         .await
         .context("failed to enumerate HID++ devices")?;
+    // Cameras are UVC, not HID++ — a parallel discovery path (see openlogi-camera).
+    let cameras = openlogi_camera::enumerate_cameras();
 
-    if inventories.is_empty() {
-        println!("No Logitech HID++ devices found.");
-        println!();
-        println!("Notes:");
-        println!("  - On macOS, quit Logi Options+ first — both apps fight over HID++ access.");
-        println!(
-            "  - A Bluetooth-direct mouse (e.g. Lift, Signature) needs Input Monitoring \
-             permission: System Settings → Privacy & Security → Input Monitoring."
-        );
-        println!(
-            "  - hidpp 0.2 only recognises Logi Bolt receivers (PID 0xC548); other \
-             receivers (Unifying) aren't surfaced yet."
-        );
+    if inventories.is_empty() && cameras.is_empty() {
+        print_nothing_found();
         std::process::exit(2);
     }
 
@@ -33,7 +25,44 @@ pub async fn run(_args: ListArgs) -> Result<()> {
         print_inventory(inv);
     }
 
+    if !cameras.is_empty() {
+        if !inventories.is_empty() {
+            println!();
+        }
+        print_cameras(&cameras);
+    }
+
     Ok(())
+}
+
+/// Help text shown when neither a HID++ device nor a Logitech camera is found.
+fn print_nothing_found() {
+    println!("No Logitech devices found.");
+    println!();
+    println!("Notes:");
+    println!("  - On macOS, quit Logi Options+ first — both apps fight over HID++ access.");
+    println!(
+        "  - A Bluetooth-direct mouse (e.g. Lift, Signature) needs Input Monitoring \
+         permission: System Settings → Privacy & Security → Input Monitoring."
+    );
+    println!(
+        "  - hidpp 0.2 only recognises Logi Bolt receivers (PID 0xC548); other \
+         receivers (Unifying) aren't surfaced yet."
+    );
+    println!("  - Cameras are detected over UVC — any Logitech (VID 0x046d) webcam.");
+}
+
+/// Print the Logitech UVC cameras section, in the same tree style as a receiver.
+fn print_cameras(cameras: &[Camera]) {
+    println!("Cameras ({} Logitech UVC)", cameras.len());
+    let last = cameras.len() - 1;
+    for (i, cam) in cameras.iter().enumerate() {
+        let prefix = if i == last { "  └─" } else { "  ├─" };
+        println!(
+            "{prefix} ● {} (camera, vid={:04x} pid={:04x}, id={})",
+            cam.name, cam.vendor_id, cam.product_id, cam.unique_id
+        );
+    }
 }
 
 fn print_inventory(inv: &DeviceInventory) {
