@@ -31,6 +31,11 @@ pub struct Camera {
     pub vendor_id: u16,
     /// USB product id (e.g. `0x0893` for the StreamCam).
     pub product_id: u16,
+    /// Largest supported frame size `(width, height)`, when the OS reports the
+    /// device's formats. Read from metadata only — no capture, no permission.
+    pub max_resolution: Option<(u32, u32)>,
+    /// Highest supported frame rate (fps) across all formats, when known.
+    pub max_fps: Option<u32>,
 }
 
 /// Enumerate every connected **Logitech** UVC camera.
@@ -50,7 +55,16 @@ pub fn enumerate_cameras() -> Vec<Camera> {
 fn enumerate_all() -> Vec<Camera> {
     macos::enumerate()
         .iter()
-        .filter_map(|raw| Camera::from_raw(&raw.name, &raw.unique_id, &raw.model_id))
+        .filter_map(|raw| {
+            let mut camera = Camera::from_raw(&raw.name, &raw.unique_id, &raw.model_id)?;
+            if raw.max_width > 0 && raw.max_height > 0 {
+                camera.max_resolution = Some((raw.max_width, raw.max_height));
+            }
+            if raw.max_fps > 0 {
+                camera.max_fps = Some(raw.max_fps);
+            }
+            Some(camera)
+        })
         .collect()
 }
 
@@ -65,7 +79,8 @@ impl Camera {
     /// Returns `None` when `model_id` carries no USB vendor/product id — i.e.
     /// it isn't a real USB camera (the macOS FaceTime camera's modelID is just
     /// `"FaceTime HD Camera"`), so it can't be attributed to a vendor and is
-    /// dropped before the Logitech filter even runs.
+    /// dropped before the Logitech filter even runs. Format fields start `None`;
+    /// the platform backend fills them in.
     fn from_raw(name: &str, unique_id: &str, model_id: &str) -> Option<Self> {
         let (vendor_id, product_id) = parse_vid_pid(model_id)?;
         Some(Self {
@@ -73,6 +88,8 @@ impl Camera {
             unique_id: unique_id.to_string(),
             vendor_id,
             product_id,
+            max_resolution: None,
+            max_fps: None,
         })
     }
 }
@@ -125,6 +142,8 @@ mod tests {
                 unique_id: "0x1123000046d0893".to_string(),
                 vendor_id: LOGITECH_VID,
                 product_id: 0x0893,
+                max_resolution: None,
+                max_fps: None,
             })
         );
         assert_eq!(

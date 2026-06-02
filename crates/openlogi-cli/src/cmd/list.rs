@@ -58,8 +58,13 @@ fn print_cameras(cameras: &[Camera]) {
     let last = cameras.len() - 1;
     for (i, cam) in cameras.iter().enumerate() {
         let prefix = if i == last { "  └─" } else { "  ├─" };
+        let caps = match (cam.max_resolution, cam.max_fps) {
+            (Some((w, h)), Some(fps)) => format!(", up to {w}x{h}@{fps}"),
+            (Some((w, h)), None) => format!(", up to {w}x{h}"),
+            _ => String::new(),
+        };
         println!(
-            "{prefix} ● {} (camera, vid={:04x} pid={:04x}, id={})",
+            "{prefix} ● {} (camera, vid={:04x} pid={:04x}{caps}, id={})",
             cam.name, cam.vendor_id, cam.product_id, cam.unique_id
         );
     }

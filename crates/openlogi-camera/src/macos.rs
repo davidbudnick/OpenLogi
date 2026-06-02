@@ -3,9 +3,12 @@
 //! `+[AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo]` returns every
 //! video-capable capture device macOS knows about; for each we read the same
 //! `localizedName` / `uniqueID` / `modelID` strings `system_profiler
-//! SPCameraDataType` reports. Vendor parsing + the Logitech filter live in the
-//! platform-independent parent module, so this file is purely "what cameras
-//! does the OS see".
+//! SPCameraDataType` reports, plus the device's supported formats (resolution +
+//! frame rate). Vendor parsing + the Logitech filter live in the
+//! platform-independent parent module.
+//!
+//! All of this is metadata — no capture session is opened, so no Camera
+//! permission is required.
 
 #![expect(
     unsafe_code,
@@ -23,6 +26,11 @@ pub(crate) struct RawCamera {
     pub name: String,
     pub unique_id: String,
     pub model_id: String,
+    /// Largest supported frame size, `(0, 0)` if none was reported.
+    pub max_width: u32,
+    pub max_height: u32,
+    /// Highest supported frame rate (fps) at any format, `0` if none.
+    pub max_fps: u32,
 }
 
 // `AVMediaTypeVideo` is an `NSString` constant exported by AVFoundation; the
@@ -30,6 +38,17 @@ pub(crate) struct RawCamera {
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
     static AVMediaTypeVideo: *const Object;
+}
+
+#[repr(C)]
+struct CMVideoDimensions {
+    width: i32,
+    height: i32,
+}
+
+#[link(name = "CoreMedia", kind = "framework")]
+unsafe extern "C" {
+    fn CMVideoFormatDescriptionGetDimensions(desc: *mut Object) -> CMVideoDimensions;
 }
 
 /// Enumerate every video `AVCaptureDevice`, as raw metadata. The Logitech
@@ -65,10 +84,14 @@ pub(crate) fn enumerate() -> Vec<RawCamera> {
                 if let (Some(name), Some(unique_id), Some(model_id)) =
                     (nsstring(name_obj), nsstring(uid_obj), nsstring(model_obj))
                 {
+                    let (max_width, max_height, max_fps) = best_format(device);
                     out.push(RawCamera {
                         name,
                         unique_id,
                         model_id,
+                        max_width,
+                        max_height,
+                        max_fps,
                     });
                 }
             }
@@ -76,6 +99,82 @@ pub(crate) fn enumerate() -> Vec<RawCamera> {
 
         let _: () = msg_send![pool, drain];
         out
+    }
+}
+
+/// Largest `(width, height, max_fps)` among the device's supported formats, or
+/// `(0, 0, 0)` when none are reported. Reads format metadata only — no capture
+/// session, so no Camera permission is needed.
+fn best_format(device: *mut Object) -> (u32, u32, u32) {
+    // SAFETY: `device` is a valid `AVCaptureDevice`; `formats` is an autoreleased
+    // `NSArray` of `AVCaptureDeviceFormat`, each exposing a `CMFormatDescription`
+    // and frame-rate ranges via documented selectors.
+    unsafe {
+        let formats: *mut Object = msg_send![device, formats];
+        if formats.is_null() {
+            return (0, 0, 0);
+        }
+        let count: usize = msg_send![formats, count];
+        let mut best = (0u32, 0u32, 0u32);
+        for i in 0..count {
+            let format: *mut Object = msg_send![formats, objectAtIndex: i];
+            if format.is_null() {
+                continue;
+            }
+            let desc: *mut Object = msg_send![format, formatDescription];
+            if desc.is_null() {
+                continue;
+            }
+            let dims = CMVideoFormatDescriptionGetDimensions(desc);
+            let w = u32::try_from(dims.width).unwrap_or(0);
+            let h = u32::try_from(dims.height).unwrap_or(0);
+            let fps = max_frame_rate(format);
+            let area = u64::from(w) * u64::from(h);
+            let best_area = u64::from(best.0) * u64::from(best.1);
+            if area > best_area || (w == best.0 && h == best.1 && fps > best.2) {
+                best = (w, h, fps);
+            }
+        }
+        best
+    }
+}
+
+/// Highest `maxFrameRate` across a format's `videoSupportedFrameRateRanges`.
+fn max_frame_rate(format: *mut Object) -> u32 {
+    // SAFETY: documented selectors on a valid `AVCaptureDeviceFormat` /
+    // `AVFrameRateRange`; `maxFrameRate` returns a `double`.
+    unsafe {
+        let ranges: *mut Object = msg_send![format, videoSupportedFrameRateRanges];
+        if ranges.is_null() {
+            return 0;
+        }
+        let count: usize = msg_send![ranges, count];
+        let mut max = 0.0f64;
+        for i in 0..count {
+            let range: *mut Object = msg_send![ranges, objectAtIndex: i];
+            if range.is_null() {
+                continue;
+            }
+            let r: f64 = msg_send![range, maxFrameRate];
+            if r > max {
+                max = r;
+            }
+        }
+        round_fps(max)
+    }
+}
+
+/// Round a frame rate to the nearest whole fps (so 59.94 reads as 60).
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "fps is rounded, finite, and clamped to a small non-negative range"
+)]
+fn round_fps(rate: f64) -> u32 {
+    if rate.is_finite() && rate > 0.0 {
+        rate.round() as u32
+    } else {
+        0
     }
 }
 
