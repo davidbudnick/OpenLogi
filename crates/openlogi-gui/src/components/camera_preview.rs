@@ -85,10 +85,15 @@ impl CameraPreview {
         }
 
         // Stop: dropping the stream closes the session (LED off); dropping the
-        // task cancels the repaint pump. The texture is freed in `render`.
+        // task cancels the repaint pump; and free the GPU texture here (not in
+        // `render`, which doesn't run while off the camera tab) so the camera
+        // leaves zero CPU *and* zero memory behind when it isn't being viewed.
         self.stream = None;
         self.repaint_task = None;
         self.last_generation = 0;
+        if let Some(old) = self.current_image.take() {
+            cx.drop_image(old, None);
+        }
         self.streaming_uid.clone_from(&target);
 
         if let Some(uid) = target {
