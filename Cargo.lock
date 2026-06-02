@@ -4508,6 +4508,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui-updater",
  "gpui_platform",
+ "image",
  "objc",
  "openlogi-assets",
  "openlogi-camera",

@@ -18,7 +18,9 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os = "macos")]
-pub use capture::{CameraStream, CaptureError, Frame, capture_frame, start_stream};
+pub use capture::{
+    CameraStream, CaptureError, Frame, camera_access_granted, capture_frame, start_stream,
+};
 
 #[cfg(not(target_os = "macos"))]
 mod capture {
@@ -66,9 +68,17 @@ mod capture {
     pub fn start_stream(_unique_id: &str) -> Result<CameraStream, CaptureError> {
         Err(CaptureError::Unsupported)
     }
+
+    /// Stub: camera access is never granted off macOS.
+    #[must_use]
+    pub fn camera_access_granted() -> bool {
+        false
+    }
 }
 #[cfg(not(target_os = "macos"))]
-pub use capture::{CameraStream, CaptureError, Frame, capture_frame, start_stream};
+pub use capture::{
+    CameraStream, CaptureError, Frame, camera_access_granted, capture_frame, start_stream,
+};
 
 /// Logitech's USB vendor id. Reported in decimal (`1133`) inside an
 /// `AVCaptureDevice` modelID, and in hex (`046d`) most everywhere else.

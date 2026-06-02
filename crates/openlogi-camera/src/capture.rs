@@ -237,6 +237,14 @@ fn ensure_access() -> Result<(), CaptureError> {
     }
 }
 
+/// Whether the process currently holds Camera permission, without prompting.
+/// Lets the GUI start a preview only when access is already granted (so it never
+/// blocks the UI thread on the permission dialog).
+#[must_use]
+pub fn camera_access_granted() -> bool {
+    matches!(authorization(), Some(true))
+}
+
 /// Pump the current thread's run loop briefly so AVFoundation callbacks fire.
 fn run_loop_tick(seconds: f64) {
     // SAFETY: `kCFRunLoopDefaultMode` is a valid mode constant; the call returns

@@ -10,6 +10,7 @@ use tracing::{info, warn};
 
 use crate::app_menu::{Minimize, Zoom};
 use crate::asset::AssetResolver;
+use crate::components::camera_preview::CameraPreview;
 use crate::components::device_carousel::DeviceCarousel;
 use crate::components::device_view::device_view;
 use crate::components::dpi_panel::DpiPanel;
@@ -22,6 +23,7 @@ pub struct AppView {
     carousel: Entity<DeviceCarousel>,
     mouse_model: Entity<MouseModelView>,
     dpi_panel: Entity<DpiPanel>,
+    camera_preview: Entity<CameraPreview>,
     #[allow(dead_code, reason = "held to keep the appearance observer alive")]
     appearance_obs: Option<Subscription>,
     /// Re-renders the root when the device list changes so the empty state
@@ -66,11 +68,13 @@ impl AppView {
         let carousel = cx.new(DeviceCarousel::new);
         let mouse_model = cx.new(MouseModelView::new);
         let dpi_panel = cx.new(DpiPanel::new);
+        let camera_preview = cx.new(CameraPreview::new);
         let state_obs = cx.observe_global::<AppState>(|_, cx| cx.notify());
         Self {
             carousel,
             mouse_model,
             dpi_panel,
+            camera_preview,
             appearance_obs: None,
             state_obs,
             accessibility_dismissed: false,
@@ -181,7 +185,9 @@ impl Render for AppView {
         // A camera (or other non-pointer device) gets the generic detail panel;
         // mice/trackballs keep the mouse model + DPI panel.
         let body = match &record {
-            Some(r) if !is_configurable_pointer(r.kind) => device_view(r, pal),
+            Some(r) if !is_configurable_pointer(r.kind) => {
+                device_view(r, &self.camera_preview, pal)
+            }
             _ if has_device => body(&self.mouse_model, &self.dpi_panel).into_any_element(),
             _ => device_empty_state(pal, scanning),
         };
