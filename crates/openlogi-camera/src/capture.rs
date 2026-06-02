@@ -1,11 +1,10 @@
-//! AVFoundation single-frame capture, used to drive the camera preview.
+//! AVFoundation camera capture: a one-shot snapshot and a live frame stream.
 //!
-//! Opens a short-lived `AVCaptureSession` on the chosen camera, grabs one BGRA
-//! frame through an `AVCaptureVideoDataOutput` delegate, converts it to RGBA,
-//! and tears the session down. Capturing (unlike enumeration) needs Camera
-//! permission *and* an app bundle carrying `NSCameraUsageDescription`; from an
-//! unbundled binary macOS denies access, which surfaces here as
-//! [`CaptureError::AccessDenied`].
+//! Both open an `AVCaptureSession` on the chosen camera and read BGRA frames
+//! through an `AVCaptureVideoDataOutput` delegate, converting to RGBA. Capturing
+//! (unlike enumeration) needs Camera permission *and* an app bundle carrying
+//! `NSCameraUsageDescription`; from an unbundled binary macOS denies access,
+//! which surfaces as [`CaptureError::AccessDenied`].
 
 #![expect(
     unsafe_code,
@@ -185,17 +184,17 @@ fn delegate_class() -> *const Class {
     ptr as *const Class
 }
 
-/// Current Camera authorization: `true` if usable, `false` if denied/restricted,
-/// `None` if undetermined (caller should request access).
+/// Current Camera authorization: `Some(true)` usable, `Some(false)` denied,
+/// `None` undetermined (caller should request access).
 fn authorization() -> Option<bool> {
     let cls = class!(AVCaptureDevice);
     // SAFETY: documented class method returning an AVAuthorizationStatus NSInteger.
     let status: isize =
         unsafe { msg_send![cls, authorizationStatusForMediaType: AVMediaTypeVideo] };
     match status {
-        3 => Some(true),      // authorized
-        1 | 2 => Some(false), // restricted / denied
-        _ => None,            // notDetermined
+        3 => Some(true),
+        1 | 2 => Some(false),
+        _ => None,
     }
 }
 
@@ -229,6 +228,15 @@ fn request_access(timeout: Duration) -> bool {
     }
 }
 
+/// Ensure the process may use the camera, requesting access if undetermined.
+fn ensure_access() -> Result<(), CaptureError> {
+    match authorization() {
+        Some(true) => Ok(()),
+        None if request_access(Duration::from_secs(30)) => Ok(()),
+        _ => Err(CaptureError::AccessDenied),
+    }
+}
+
 /// Pump the current thread's run loop briefly so AVFoundation callbacks fire.
 fn run_loop_tick(seconds: f64) {
     // SAFETY: `kCFRunLoopDefaultMode` is a valid mode constant; the call returns
@@ -256,30 +264,34 @@ fn device_with_unique_id(unique_id: &str) -> Option<StrongPtr> {
     }
 }
 
-/// Capture a single RGBA frame from the camera with `unique_id`.
-///
-/// # Errors
-/// [`CaptureError::AccessDenied`] when Camera permission isn't (and can't be)
-/// granted, [`CaptureError::NotFound`] for an unknown id, [`CaptureError::Timeout`]
-/// when no frame arrives, or [`CaptureError::Setup`] on AVFoundation errors.
-pub fn capture_frame(unique_id: &str, timeout: Duration) -> Result<Frame, CaptureError> {
-    match authorization() {
-        Some(true) => {}
-        Some(false) => return Err(CaptureError::AccessDenied),
-        None => {
-            if !request_access(Duration::from_secs(30)) {
-                return Err(CaptureError::AccessDenied);
-            }
+/// A running capture session. Frames flow to the delegate on a background
+/// dispatch queue and land in [`latest`]; dropping the session stops it.
+struct Session {
+    handle: StrongPtr,
+    _output: StrongPtr,
+    _delegate: StrongPtr,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // SAFETY: `self.session` is a valid, retained AVCaptureSession.
+        unsafe {
+            let _: () = msg_send![*self.handle, stopRunning];
         }
     }
+}
 
+/// Authorize, wire up, and start a capture session on `unique_id`. Frames begin
+/// arriving in [`latest`] shortly after this returns.
+fn open_session(unique_id: &str) -> Result<Session, CaptureError> {
+    ensure_access()?;
     let device = device_with_unique_id(unique_id).ok_or(CaptureError::NotFound)?;
     if let Ok(mut slot) = latest().lock() {
         *slot = None;
     }
 
-    // SAFETY: standard AVCaptureSession wiring with documented selectors; objects
-    // are retained by the session, and the session is stopped before return.
+    // SAFETY: standard AVCaptureSession wiring with documented selectors; every
+    // object added is retained by the session, and the session is stopped on Drop.
     unsafe {
         let session: *mut Object = msg_send![class!(AVCaptureSession), new];
         if session.is_null() {
@@ -303,7 +315,6 @@ pub fn capture_frame(unique_id: &str, timeout: Duration) -> Result<Frame, Captur
 
         let output: *mut Object = msg_send![class!(AVCaptureVideoDataOutput), new];
         let output = StrongPtr::new(output);
-        // Force BGRA so the delegate's byte layout is known.
         let num: *mut Object =
             msg_send![class!(NSNumber), numberWithUnsignedInt: PIXEL_FORMAT_32BGRA];
         let settings: *mut Object = msg_send![
@@ -328,25 +339,59 @@ pub fn capture_frame(unique_id: &str, timeout: Duration) -> Result<Frame, Captur
             return Err(CaptureError::Setup("session rejected output".into()));
         }
         let _: () = msg_send![*session, addOutput: *output];
-
         let _: () = msg_send![*session, startRunning];
 
-        let deadline = Instant::now() + timeout;
-        let frame = loop {
-            if let Ok(mut slot) = latest().lock() {
-                if let Some(frame) = slot.take() {
-                    break Some(frame);
-                }
-            }
-            if Instant::now() >= deadline {
-                break None;
-            }
-            run_loop_tick(0.03);
-        };
-
-        let _: () = msg_send![*session, stopRunning];
-        let _: () = msg_send![*output, setSampleBufferDelegate: std::ptr::null::<Object>() queue: std::ptr::null::<Object>()];
-
-        frame.ok_or(CaptureError::Timeout)
+        Ok(Session {
+            handle: session,
+            _output: output,
+            _delegate: delegate,
+        })
     }
+}
+
+/// Capture a single RGBA frame from the camera with `unique_id`.
+///
+/// # Errors
+/// [`CaptureError::AccessDenied`] when Camera permission isn't (and can't be)
+/// granted, [`CaptureError::NotFound`] for an unknown id, [`CaptureError::Timeout`]
+/// when no frame arrives, or [`CaptureError::Setup`] on AVFoundation errors.
+pub fn capture_frame(unique_id: &str, timeout: Duration) -> Result<Frame, CaptureError> {
+    let _session = open_session(unique_id)?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(mut slot) = latest().lock() {
+            if let Some(frame) = slot.take() {
+                return Ok(frame);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(CaptureError::Timeout);
+        }
+        run_loop_tick(0.03);
+    }
+}
+
+/// A live preview stream. Holds the session open; [`CameraStream::latest_frame`]
+/// returns the most recent frame each time it's polled. Dropping it stops the
+/// camera.
+pub struct CameraStream {
+    _session: Session,
+}
+
+impl CameraStream {
+    /// The most recently delivered frame, or `None` before the first arrives.
+    #[must_use]
+    pub fn latest_frame(&self) -> Option<Frame> {
+        latest().lock().ok().and_then(|slot| slot.clone())
+    }
+}
+
+/// Start a live capture stream on the camera with `unique_id`.
+///
+/// # Errors
+/// Same as [`capture_frame`], minus `Timeout` (frames are polled, not awaited).
+pub fn start_stream(unique_id: &str) -> Result<CameraStream, CaptureError> {
+    Ok(CameraStream {
+        _session: open_session(unique_id)?,
+    })
 }

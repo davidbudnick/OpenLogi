@@ -18,7 +18,7 @@ mod macos;
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os = "macos")]
-pub use capture::{CaptureError, Frame, capture_frame};
+pub use capture::{CameraStream, CaptureError, Frame, capture_frame, start_stream};
 
 #[cfg(not(target_os = "macos"))]
 mod capture {
@@ -51,9 +51,24 @@ mod capture {
     pub fn capture_frame(_unique_id: &str, _timeout: Duration) -> Result<Frame, CaptureError> {
         Err(CaptureError::Unsupported)
     }
+
+    /// Stub live stream (never yields a frame off macOS).
+    pub struct CameraStream;
+
+    impl CameraStream {
+        #[must_use]
+        pub fn latest_frame(&self) -> Option<Frame> {
+            None
+        }
+    }
+
+    /// Stub: returns [`CaptureError::Unsupported`] off macOS.
+    pub fn start_stream(_unique_id: &str) -> Result<CameraStream, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
 }
 #[cfg(not(target_os = "macos"))]
-pub use capture::{CaptureError, Frame, capture_frame};
+pub use capture::{CameraStream, CaptureError, Frame, capture_frame, start_stream};
 
 /// Logitech's USB vendor id. Reported in decimal (`1133`) inside an
 /// `AVCaptureDevice` modelID, and in hex (`046d`) most everywhere else.
