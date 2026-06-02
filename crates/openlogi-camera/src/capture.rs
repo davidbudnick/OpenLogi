@@ -91,8 +91,8 @@ static PREVIEW_TARGET_W: AtomicU32 = AtomicU32::new(0);
 /// pushes ~30 fps but the preview only needs ~10, and skipping before the
 /// pixel-buffer lock makes the dropped frames almost free.
 static FRAME_SKIP: AtomicU64 = AtomicU64::new(0);
-/// Process one in every `FRAME_STRIDE` delivered frames (30 fps / 3 ≈ 10 fps).
-const FRAME_STRIDE: u64 = 3;
+/// Process one in every `FRAME_STRIDE` delivered frames (30 fps / 2 = 15 fps).
+const FRAME_STRIDE: u64 = 2;
 
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {

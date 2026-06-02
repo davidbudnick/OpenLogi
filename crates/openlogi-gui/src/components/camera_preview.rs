@@ -99,9 +99,21 @@ impl CameraPreview {
                 self.repaint_task = Some(cx.spawn(async move |this, cx| {
                     loop {
                         cx.background_executor()
-                            .timer(Duration::from_millis(100))
+                            .timer(Duration::from_millis(16))
                             .await;
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        // Repaint only when a *new* frame has arrived, so gpui
+                        // isn't re-rendering the window on idle ticks — keeps the
+                        // preview smooth and the rest of the UI responsive.
+                        let result = this.update(cx, |view, cx| {
+                            let has_new = view
+                                .stream
+                                .as_ref()
+                                .is_some_and(|s| s.frame_generation() != view.last_generation);
+                            if has_new {
+                                cx.notify();
+                            }
+                        });
+                        if result.is_err() {
                             break;
                         }
                     }
