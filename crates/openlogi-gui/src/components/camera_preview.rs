@@ -1,18 +1,22 @@
-//! Live webcam preview for the camera detail panel.
+//! Live webcam preview for the camera detail panel — fully automatic.
 //!
-//! Streams frames from the active Logitech camera via `openlogi-camera` and
-//! renders them into a gpui image. To stay memory- and CPU-flat: the preview
-//! stream captures at a reduced resolution, the GPU texture is rebuilt only when
-//! a *new* frame has arrived (not every repaint), and the previous texture is
-//! freed via [`Window::drop_image`]. The stream starts only when Camera
-//! permission is already granted, so the UI thread never blocks on the dialog.
+//! The camera opens **only while its panel is on screen**: selecting the camera
+//! starts an `AVCaptureSession` (which lights the hardware LED), and switching
+//! to any other device closes it (LED off, zero camera cost). There's no manual
+//! toggle. While streaming it captures at a reduced resolution, rebuilds the GPU
+//! texture only when a new frame arrives, repaints ~15 fps, and frees the old
+//! texture via [`Window::drop_image`].
+//!
+//! Stream lifecycle is driven from the global [`AppState`] observer (not
+//! `render`), because the panel stops rendering when you navigate away — so
+//! `render` alone could never close the camera.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Context, IntoElement, ParentElement, Render, RenderImage, SharedString,
-    Styled, Subscription, Window, div, img, px,
+    Styled, Subscription, Task, Window, div, img, px,
 };
 use gpui_component::v_flex;
 use image::{Frame as ImageFrame, RgbaImage};
@@ -25,48 +29,35 @@ use crate::theme::{self, Palette};
 const PREVIEW_W: f32 = 480.;
 const PREVIEW_H: f32 = 270.; // 16:9
 
-/// Live preview view. Owns the capture stream and the current frame's texture,
-/// swapping both as the active camera changes or new frames arrive.
+/// Live preview view. Holds the capture stream + its texture only while a
+/// camera is the active device.
 pub struct CameraPreview {
     stream: Option<CameraStream>,
     streaming_uid: Option<String>,
-    /// The frame currently uploaded as a GPU texture. Replaced (and the old one
-    /// freed via `Window::drop_image`) only when a new frame arrives, so memory
-    /// stays flat instead of leaking a texture per repaint.
     current_image: Option<Arc<RenderImage>>,
     last_generation: u64,
+    /// ~15 fps repaint pump; exists only while streaming (dropping it cancels it).
+    repaint_task: Option<Task<()>>,
     #[allow(dead_code, reason = "held to keep the AppState observer alive")]
     state_obs: Subscription,
 }
 
 impl CameraPreview {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let state_obs = cx.observe_global::<AppState>(|_, cx| cx.notify());
-        // Repaint ~30 fps while streaming so freshly-delivered frames show.
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(33))
-                    .await;
-                let alive = this
-                    .update(cx, |view, cx| {
-                        if view.stream.is_some() {
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !alive {
-                    break;
-                }
-            }
-        })
-        .detach();
+        // Drive the stream lifecycle from here, not `render`: when the user
+        // switches to another device this panel stops rendering, so `render`
+        // could never observe the change to close the camera.
+        let state_obs = cx.observe_global::<AppState>(|this, cx| {
+            this.sync_stream(cx);
+            cx.notify();
+        });
 
         Self {
             stream: None,
             streaming_uid: None,
             current_image: None,
             last_generation: 0,
+            repaint_task: None,
             state_obs,
         }
     }
@@ -85,18 +76,36 @@ impl CameraPreview {
             .map(ToOwned::to_owned)
     }
 
-    /// Start/stop the capture stream so it tracks the active camera.
-    fn sync_stream(&mut self, cx: &App) {
+    /// Open the camera when its panel is active, close it otherwise. Spawns the
+    /// repaint pump when starting; cancels it (drop) when stopping.
+    fn sync_stream(&mut self, cx: &mut Context<Self>) {
         let target = Self::active_camera_uid(cx);
         if target == self.streaming_uid {
             return;
         }
+
+        // Stop: dropping the stream closes the session (LED off); dropping the
+        // task cancels the repaint pump. The texture is freed in `render`.
         self.stream = None;
+        self.repaint_task = None;
         self.last_generation = 0;
         self.streaming_uid.clone_from(&target);
+
         if let Some(uid) = target {
             if openlogi_camera::camera_access_granted() {
                 self.stream = openlogi_camera::start_stream(&uid).ok();
+            }
+            if self.stream.is_some() {
+                self.repaint_task = Some(cx.spawn(async move |this, cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(100))
+                            .await;
+                        if this.update(cx, |_, cx| cx.notify()).is_err() {
+                            break;
+                        }
+                    }
+                }));
             }
         }
     }
@@ -108,14 +117,14 @@ impl Render for CameraPreview {
         let pal = theme::palette(cx);
         let granted = openlogi_camera::camera_access_granted();
 
-        // Switched away from a camera — free the texture.
+        // Not streaming → make sure no texture is held.
         if self.stream.is_none() {
             if let Some(old) = self.current_image.take() {
                 let _ = window.drop_image(old);
             }
         }
 
-        // Rebuild the texture only when a new frame has arrived, freeing the old.
+        // Rebuild the texture only when a new frame arrived; free the old one.
         if let Some(stream) = self.stream.as_ref() {
             let generation = stream.frame_generation();
             if generation != self.last_generation {
@@ -129,7 +138,7 @@ impl Render for CameraPreview {
             }
         }
 
-        let inner: AnyElement = if let Some(image) = self.current_image.as_ref() {
+        let surface: AnyElement = if let Some(image) = self.current_image.as_ref() {
             img(image.clone())
                 .w(px(PREVIEW_W))
                 .h(px(PREVIEW_H))
@@ -149,13 +158,13 @@ impl Render for CameraPreview {
             .border_1()
             .border_color(pal.border)
             .bg(pal.surface)
-            .child(inner)
+            .child(surface)
     }
 }
 
 /// Build a gpui image from one RGBA camera frame. gpui's [`RenderImage`] is
 /// BGRA, so red/blue are swapped; the texture is uploaded at the camera's
-/// (already-reduced) capture resolution and scaled to the panel by the GPU.
+/// (reduced) capture resolution and scaled to the panel by the GPU.
 fn build_image(frame: &Frame) -> Option<Arc<RenderImage>> {
     let mut bgra = frame.rgba.clone();
     for chunk in bgra.chunks_exact_mut(4) {

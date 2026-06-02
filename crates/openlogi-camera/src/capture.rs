@@ -18,7 +18,7 @@
 )]
 
 use std::ffi::{CString, c_void};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -82,6 +82,18 @@ fn latest() -> &'static Mutex<Option<Frame>> {
 /// repeat without comparing pixel buffers.
 static FRAME_GEN: AtomicU64 = AtomicU64::new(0);
 
+/// Target max width for delegate downsampling (0 = full resolution). Previews
+/// set this so the delegate decimates the (possibly 1080p) buffer down to a
+/// cheap thumbnail in one strided pass — far less copy + a tiny GPU texture.
+static PREVIEW_TARGET_W: AtomicU32 = AtomicU32::new(0);
+
+/// Counts delivered buffers so the delegate can drop most of them: the camera
+/// pushes ~30 fps but the preview only needs ~10, and skipping before the
+/// pixel-buffer lock makes the dropped frames almost free.
+static FRAME_SKIP: AtomicU64 = AtomicU64::new(0);
+/// Process one in every `FRAME_STRIDE` delivered frames (30 fps / 3 ≈ 10 fps).
+const FRAME_STRIDE: u64 = 3;
+
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
     static AVMediaTypeVideo: *const Object;
@@ -127,6 +139,10 @@ extern "C" fn did_output(
     sbuf: *mut Object,
     _conn: *mut Object,
 ) {
+    // Throttle to ~10 fps before doing any work (the camera delivers ~30).
+    if FRAME_SKIP.fetch_add(1, Ordering::Relaxed) % FRAME_STRIDE != 0 {
+        return;
+    }
     // SAFETY: `sbuf` is a valid CMSampleBuffer delivered by AVFoundation; the
     // image buffer is locked for the span of the read and unlocked before return.
     unsafe {
@@ -138,13 +154,21 @@ extern "C" fn did_output(
         let bytes_per_row = CVPixelBufferGetBytesPerRow(pb);
         let width = CVPixelBufferGetWidth(pb);
         let height = CVPixelBufferGetHeight(pb);
-        if !base.is_null() && width > 0 && height > 0 {
-            let mut rgba = vec![0u8; width * height * 4];
-            for y in 0..height {
-                let row = base.add(y * bytes_per_row);
-                for x in 0..width {
-                    let src = row.add(x * 4);
-                    let out = (y * width + x) * 4;
+        let target = PREVIEW_TARGET_W.load(Ordering::Relaxed) as usize;
+        let step = if target > 0 && width > target {
+            width.div_ceil(target)
+        } else {
+            1
+        };
+        let out_w = width / step;
+        let out_h = height / step;
+        if !base.is_null() && out_w > 0 && out_h > 0 {
+            let mut rgba = vec![0u8; out_w * out_h * 4];
+            for oy in 0..out_h {
+                let row = base.add(oy * step * bytes_per_row);
+                for ox in 0..out_w {
+                    let src = row.add(ox * step * 4);
+                    let out = (oy * out_w + ox) * 4;
                     rgba[out] = *src.add(2); // R <- B-G-R-A
                     rgba[out + 1] = *src.add(1);
                     rgba[out + 2] = *src;
@@ -153,8 +177,8 @@ extern "C" fn did_output(
             }
             if let Ok(mut slot) = latest().lock() {
                 *slot = Some(Frame {
-                    width: width as u32,
-                    height: height as u32,
+                    width: out_w as u32,
+                    height: out_h as u32,
                     rgba,
                 });
                 FRAME_GEN.fetch_add(1, Ordering::Relaxed);
@@ -304,6 +328,8 @@ fn open_session(unique_id: &str, low_res: bool) -> Result<Session, CaptureError>
     if let Ok(mut slot) = latest().lock() {
         *slot = None;
     }
+    // Previews decimate to a ~480px-wide thumbnail; snapshots keep full res.
+    PREVIEW_TARGET_W.store(if low_res { 480 } else { 0 }, Ordering::Relaxed);
 
     // SAFETY: standard AVCaptureSession wiring with documented selectors; every
     // object added is retained by the session, and the session is stopped on Drop.
@@ -313,15 +339,6 @@ fn open_session(unique_id: &str, low_res: bool) -> Result<Session, CaptureError>
             return Err(CaptureError::Setup("AVCaptureSession".into()));
         }
         let session = StrongPtr::new(session);
-
-        // Preview streams capture at a reduced resolution — far less per-frame
-        // copy + texture upload than native 1080p, which keeps the UI smooth.
-        if low_res {
-            let can: BOOL = msg_send![*session, canSetSessionPreset: AVCaptureSessionPresetMedium];
-            if can != NO {
-                let _: () = msg_send![*session, setSessionPreset: AVCaptureSessionPresetMedium];
-            }
-        }
 
         let mut err: *mut Object = std::ptr::null_mut();
         let input: *mut Object = msg_send![
@@ -336,6 +353,15 @@ fn open_session(unique_id: &str, low_res: bool) -> Result<Session, CaptureError>
             return Err(CaptureError::Setup("session rejected input".into()));
         }
         let _: () = msg_send![*session, addInput: input];
+
+        // Preview streams capture at a reduced resolution — far less per-frame
+        // copy + texture upload than native 1080p, which keeps the UI smooth.
+        if low_res {
+            let can: BOOL = msg_send![*session, canSetSessionPreset: AVCaptureSessionPresetMedium];
+            if can != NO {
+                let _: () = msg_send![*session, setSessionPreset: AVCaptureSessionPresetMedium];
+            }
+        }
 
         let output: *mut Object = msg_send![class!(AVCaptureVideoDataOutput), new];
         let output = StrongPtr::new(output);

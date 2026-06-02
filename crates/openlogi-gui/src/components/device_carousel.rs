@@ -1,10 +1,7 @@
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, BorrowAppContext as _, BoxShadow, Context, Entity,
-    FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, ease_in_out, point,
-    prelude::FluentBuilder as _, px, rgb,
+    AnyElement, BorrowAppContext as _, Context, Entity, FontWeight, InteractiveElement,
+    IntoElement, ParentElement, Render, StatefulInteractiveElement as _, Styled, Subscription,
+    Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 use openlogi_core::device::{BatteryInfo, BatteryLevel, BatteryStatus, DeviceKind};
@@ -142,31 +139,15 @@ fn card_view(
         .into_any_element()
 }
 
+/// A static status dot — green when connected, grey when offline. Deliberately
+/// not animated: a repeating animation forces gpui to repaint every frame,
+/// which pegs a CPU core for as long as any device is connected.
 fn status_dot(status: Status) -> AnyElement {
-    let base = div()
+    div()
         .size(px(DOT_SIZE))
         .rounded_full()
-        .bg(rgb(status.color()));
-    match status {
-        Status::Offline => base.into_any_element(),
-        Status::Connected => base
-            .with_animation(
-                "status-breath",
-                Animation::new(Duration::from_millis(2200))
-                    .repeat()
-                    .with_easing(ease_in_out),
-                |this, delta| {
-                    let intensity = (delta * std::f32::consts::PI).sin();
-                    this.shadow(vec![BoxShadow {
-                        color: gpui::hsla(0.35, 0.7, 0.55, 0.35 + intensity * 0.45),
-                        offset: point(px(0.), px(0.)),
-                        blur_radius: px(2. + intensity * 8.),
-                        spread_radius: px(0.5),
-                    }])
-                },
-            )
-            .into_any_element(),
-    }
+        .bg(rgb(status.color()))
+        .into_any_element()
 }
 
 fn card_from_record(r: &DeviceRecord) -> CardData {
