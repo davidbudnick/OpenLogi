@@ -15,6 +15,7 @@ openlogi-core = { path = "../openlogi-core", version = "0.4.0" }
 openlogi-hid = { path = "../openlogi-hid", version = "0.4.0" }
 openlogi-camera = { path = "../openlogi-camera", version = "0.4.0" }
 openlogi-assets = { path = "../openlogi-assets", version = "0.4.0" }
+png = "0.17"
 clap = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }

@@ -4,6 +4,7 @@ use clap::Subcommand;
 pub mod assets;
 pub mod diag;
 pub mod list;
+pub mod snapshot;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -15,6 +16,8 @@ pub enum Command {
     /// Real-device round-trip smoke tests against the HID++ write path.
     #[command(subcommand)]
     Diag(diag::DiagCmd),
+    /// Capture one frame from a Logitech webcam to a PNG.
+    Snapshot(snapshot::SnapshotArgs),
 }
 
 impl Command {
@@ -24,6 +27,7 @@ impl Command {
             // `assets sync` is blocking HTTP — no need for the async runtime.
             Self::Assets(cmd) => cmd.run(),
             Self::Diag(cmd) => cmd.run().await,
+            Self::Snapshot(args) => snapshot::run(args),
         }
     }
 }

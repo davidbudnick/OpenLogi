@@ -4461,6 +4461,7 @@ dependencies = [
 name = "openlogi-camera"
 version = "0.4.0"
 dependencies = [
+ "block",
  "objc",
  "serde",
  "tracing",
@@ -4476,6 +4477,7 @@ dependencies = [
  "openlogi-camera",
  "openlogi-core",
  "openlogi-hid",
+ "png 0.17.16",
  "tokio",
  "tracing",
  "tracing-subscriber",

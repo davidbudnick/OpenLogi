@@ -15,6 +15,46 @@ use serde::Serialize;
 #[cfg(target_os = "macos")]
 mod macos;
 
+#[cfg(target_os = "macos")]
+mod capture;
+#[cfg(target_os = "macos")]
+pub use capture::{CaptureError, Frame, capture_frame};
+
+#[cfg(not(target_os = "macos"))]
+mod capture {
+    use std::time::Duration;
+
+    /// One decoded camera frame, tightly-packed RGBA8.
+    #[derive(Clone)]
+    pub struct Frame {
+        pub width: u32,
+        pub height: u32,
+        pub rgba: Vec<u8>,
+    }
+
+    /// Why a capture attempt failed.
+    #[derive(Debug, Clone)]
+    pub enum CaptureError {
+        /// Capture has no backend on this platform.
+        Unsupported,
+    }
+
+    impl std::fmt::Display for CaptureError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "camera capture is only implemented on macOS")
+        }
+    }
+
+    impl std::error::Error for CaptureError {}
+
+    /// Stub: returns [`CaptureError::Unsupported`] off macOS.
+    pub fn capture_frame(_unique_id: &str, _timeout: Duration) -> Result<Frame, CaptureError> {
+        Err(CaptureError::Unsupported)
+    }
+}
+#[cfg(not(target_os = "macos"))]
+pub use capture::{CaptureError, Frame, capture_frame};
+
 /// Logitech's USB vendor id. Reported in decimal (`1133`) inside an
 /// `AVCaptureDevice` modelID, and in hex (`046d`) most everywhere else.
 pub const LOGITECH_VID: u16 = 0x046d;
