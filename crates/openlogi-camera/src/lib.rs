@@ -62,6 +62,11 @@ mod capture {
         pub fn latest_frame(&self) -> Option<Frame> {
             None
         }
+
+        #[must_use]
+        pub fn frame_generation(&self) -> u64 {
+            0
+        }
     }
 
     /// Stub: returns [`CaptureError::Unsupported`] off macOS.

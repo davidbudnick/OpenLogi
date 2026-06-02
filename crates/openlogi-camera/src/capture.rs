@@ -18,6 +18,7 @@
 )]
 
 use std::ffi::{CString, c_void};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -77,9 +78,14 @@ fn latest() -> &'static Mutex<Option<Frame>> {
     LATEST.get_or_init(|| Mutex::new(None))
 }
 
+/// Increments on every delivered frame, so a poller can tell a new frame from a
+/// repeat without comparing pixel buffers.
+static FRAME_GEN: AtomicU64 = AtomicU64::new(0);
+
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
     static AVMediaTypeVideo: *const Object;
+    static AVCaptureSessionPresetMedium: *const Object;
 }
 
 #[link(name = "CoreMedia", kind = "framework")]
@@ -151,6 +157,7 @@ extern "C" fn did_output(
                     height: height as u32,
                     rgba,
                 });
+                FRAME_GEN.fetch_add(1, Ordering::Relaxed);
             }
         }
         CVPixelBufferUnlockBaseAddress(pb, LOCK_READ_ONLY);
@@ -291,7 +298,7 @@ impl Drop for Session {
 
 /// Authorize, wire up, and start a capture session on `unique_id`. Frames begin
 /// arriving in [`latest`] shortly after this returns.
-fn open_session(unique_id: &str) -> Result<Session, CaptureError> {
+fn open_session(unique_id: &str, low_res: bool) -> Result<Session, CaptureError> {
     ensure_access()?;
     let device = device_with_unique_id(unique_id).ok_or(CaptureError::NotFound)?;
     if let Ok(mut slot) = latest().lock() {
@@ -306,6 +313,15 @@ fn open_session(unique_id: &str) -> Result<Session, CaptureError> {
             return Err(CaptureError::Setup("AVCaptureSession".into()));
         }
         let session = StrongPtr::new(session);
+
+        // Preview streams capture at a reduced resolution — far less per-frame
+        // copy + texture upload than native 1080p, which keeps the UI smooth.
+        if low_res {
+            let can: BOOL = msg_send![*session, canSetSessionPreset: AVCaptureSessionPresetMedium];
+            if can != NO {
+                let _: () = msg_send![*session, setSessionPreset: AVCaptureSessionPresetMedium];
+            }
+        }
 
         let mut err: *mut Object = std::ptr::null_mut();
         let input: *mut Object = msg_send![
@@ -364,7 +380,7 @@ fn open_session(unique_id: &str) -> Result<Session, CaptureError> {
 /// granted, [`CaptureError::NotFound`] for an unknown id, [`CaptureError::Timeout`]
 /// when no frame arrives, or [`CaptureError::Setup`] on AVFoundation errors.
 pub fn capture_frame(unique_id: &str, timeout: Duration) -> Result<Frame, CaptureError> {
-    let _session = open_session(unique_id)?;
+    let _session = open_session(unique_id, false)?;
     let deadline = Instant::now() + timeout;
     loop {
         if let Ok(mut slot) = latest().lock() {
@@ -392,6 +408,13 @@ impl CameraStream {
     pub fn latest_frame(&self) -> Option<Frame> {
         latest().lock().ok().and_then(|slot| slot.clone())
     }
+
+    /// A counter that increments on every delivered frame, so the preview can
+    /// skip rebuilding its texture when no new frame has arrived.
+    #[must_use]
+    pub fn frame_generation(&self) -> u64 {
+        FRAME_GEN.load(Ordering::Relaxed)
+    }
 }
 
 /// Start a live capture stream on the camera with `unique_id`.
@@ -400,6 +423,6 @@ impl CameraStream {
 /// Same as [`capture_frame`], minus `Timeout` (frames are polled, not awaited).
 pub fn start_stream(unique_id: &str) -> Result<CameraStream, CaptureError> {
     Ok(CameraStream {
-        _session: open_session(unique_id)?,
+        _session: open_session(unique_id, true)?,
     })
 }
