@@ -19,7 +19,6 @@ use openlogi_core::config::Lighting;
 use crate::state::AppState;
 use crate::theme::{self, ACCENT_BLUE, Palette};
 
-const PANEL_W: f32 = 300.;
 const SWATCH: f32 = 28.;
 
 /// Preset colors as 6-hex `"RRGGBB"`. Deliberately small — covering the common
@@ -102,7 +101,7 @@ impl Render for LightingPanel {
 
         v_flex()
             .gap_3()
-            .w(px(PANEL_W))
+            .w_full()
             .child(
                 h_flex()
                     .justify_between()

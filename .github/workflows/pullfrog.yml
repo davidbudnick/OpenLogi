@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   pullfrog:
-    if: ${{ !startsWith(github.ref_name, 'release-plz-') }}
+    if: ${{ !startsWith(github.ref_name, 'release-plz/') && !startsWith(github.head_ref, 'release-plz/') }}
     runs-on: ubuntu-latest
     permissions:
       id-token: write
