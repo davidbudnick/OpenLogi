@@ -1,10 +1,8 @@
-use std::time::Duration;
-
 use gpui::{
-    Animation, AnimationExt as _, AnyElement, AppContext as _, BorrowAppContext as _, BoxShadow,
-    Context, Div, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement as _, Styled, Subscription, Window, div, ease_in_out,
-    img, point, prelude::FluentBuilder as _, px, relative, rgb,
+    AnyElement, AppContext as _, BorrowAppContext as _, BoxShadow, Context, Div, Entity,
+    FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, img, point,
+    prelude::FluentBuilder as _, px, relative, rgb,
 };
 use gpui_component::{
     Icon, IconName,
@@ -505,7 +503,7 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
                 };
                 let key = record.config_key.clone();
                 let view = view.clone();
-                device_card(idx, &record, focused, pal)
+                device_card(&record, focused, pal)
                     .id(("device-card", idx))
                     .cursor_pointer()
                     .hover(move |s| s.bg(pal.surface))
@@ -527,7 +525,7 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
 /// faint accent ring; inactive cards reserve the same 1px border in a
 /// transparent colour so selection never nudges the layout. Returns a bare
 /// [`Div`] so the gallery can wire the click handler.
-fn device_card(idx: usize, record: &DeviceRecord, active: bool, pal: Palette) -> Div {
+fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
     let ring = if active {
         rgb(theme::ACCENT_BLUE).into()
     } else {
@@ -569,7 +567,7 @@ fn device_card(idx: usize, record: &DeviceRecord, active: bool, pal: Palette) ->
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .child(record.display_name.clone()),
                         )
-                        .child(status_dot(idx, record.online)),
+                        .child(status_dot(record.online)),
                 )
                 .child(
                     h_flex()
@@ -621,10 +619,12 @@ fn device_image(record: &DeviceRecord, pal: Palette) -> AnyElement {
     }
 }
 
-/// Connectivity dot for a gallery card: a steady grey when offline, a softly
-/// breathing green when connected. The animation id is keyed by card index so
-/// sibling cards don't share animation state.
-fn status_dot(idx: usize, online: bool) -> AnyElement {
+/// Connectivity dot for a gallery card: a steady grey when offline, a green dot
+/// with a static glow when connected. The glow is a fixed `BoxShadow`, not a
+/// `.repeat()` animation: an infinite animation keeps GPUI re-rendering every
+/// frame for as long as a device is connected, pinning the render loop and
+/// burning CPU/battery while the app is idle.
+fn status_dot(online: bool) -> AnyElement {
     let color = if online {
         theme::STATUS_CONNECTED
     } else {
@@ -634,21 +634,12 @@ fn status_dot(idx: usize, online: bool) -> AnyElement {
     if !online {
         return base.into_any_element();
     }
-    base.with_animation(
-        ("gallery-status-breath", idx),
-        Animation::new(Duration::from_millis(2200))
-            .repeat()
-            .with_easing(ease_in_out),
-        |this, delta| {
-            let intensity = (delta * std::f32::consts::PI).sin();
-            this.shadow(vec![BoxShadow {
-                color: gpui::hsla(0.35, 0.7, 0.55, 0.35 + intensity * 0.45),
-                offset: point(px(0.), px(0.)),
-                blur_radius: px(2. + intensity * 8.),
-                spread_radius: px(0.5),
-            }])
-        },
-    )
+    base.shadow(vec![BoxShadow {
+        color: gpui::hsla(0.35, 0.7, 0.55, 0.6),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(6.),
+        spread_radius: px(0.5),
+    }])
     .into_any_element()
 }
 
