@@ -15,7 +15,7 @@
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{
-    Arc,
+    Arc, LazyLock,
     atomic::{AtomicBool, Ordering},
 };
 use std::thread;
@@ -23,6 +23,10 @@ use std::thread;
 use evdev::uinput::VirtualDevice;
 use evdev::{Device, EventSummary, KeyCode, RelativeAxisCode};
 use tracing::{debug, error, warn};
+use x11rb::connection::Connection as _;
+use x11rb::properties::WmClass;
+use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, Window};
+use x11rb::rust_connection::RustConnection;
 
 use crate::{ButtonId, EventDisposition, HookError, MouseEvent};
 
@@ -343,6 +347,60 @@ fn device_thread(
 
     debug!("hook stopped on {}", path.display());
     // Dropping `device` releases the exclusive grab, restoring normal input delivery.
+}
+
+// ── frontmost_bundle_id ──────────────────────────────────────────────────────
+
+struct X11State {
+    conn: RustConnection,
+    root: Window,
+    net_active_window: Atom,
+}
+
+static X11_STATE: LazyLock<Option<X11State>> = LazyLock::new(|| {
+    let (conn, screen_num) = RustConnection::connect(None)
+        .map_err(|e| debug!("X11 not available, frontmost_bundle_id will return None: {e}"))
+        .ok()?;
+    let root = conn.setup().roots[screen_num].root;
+    let net_active_window = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    Some(X11State { conn, root, net_active_window })
+});
+
+/// Return the X11 `WM_CLASS` class component of the currently active window,
+/// e.g. `"Firefox"` or `"Code"`.
+///
+/// Returns `None` when there is no active window, when the X11 display is
+/// unavailable (Wayland-only session without XWayland), or on read error.
+/// Native Wayland windows are not visible through this path.
+pub(crate) fn frontmost_bundle_id() -> Option<String> {
+    let state = X11_STATE.as_ref()?;
+
+    // _NET_ACTIVE_WINDOW on the root window holds the focused window's XID.
+    let window: Window = state
+        .conn
+        .get_property(false, state.root, state.net_active_window, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?
+        .value32()?
+        .next()?;
+    if window == 0 {
+        return None;
+    }
+
+    // WM_CLASS is instance_name\0class_name\0; the class component is more
+    // stable across window instances and is what profiles should key on
+    // (e.g. "Firefox", not "Navigator").
+    let wm = WmClass::get(&state.conn, window).ok()?.reply_unchecked().ok()??;
+    std::str::from_utf8(wm.class())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

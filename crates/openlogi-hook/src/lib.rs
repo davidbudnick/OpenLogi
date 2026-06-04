@@ -210,22 +210,28 @@ impl Hook {
     }
 }
 
-/// Return the macOS bundle identifier of the currently frontmost application,
-/// e.g. `"com.microsoft.VSCode"`. `None` when no app is frontmost, when
-/// reading the value fails, or on any non-macOS platform.
+/// Return an opaque string identifying the currently frontmost application.
 ///
-/// On Linux, per-application profile switching is not yet implemented and this
-/// always returns `None`.
+/// On macOS this is the bundle identifier, e.g. `"com.microsoft.VSCode"`.
+/// On Linux (X11 / XWayland) this is the `WM_CLASS` class component,
+/// e.g. `"Code"` or `"Firefox"`. Pure Wayland windows (not running under
+/// XWayland) are not visible through this path and return `None`.
 ///
-/// Costs four `objc_msgSend`s plus a UTF-8 copy — well under a millisecond
-/// at the 1 Hz polling cadence in `openlogi-gui::app_watcher`.
+/// `None` when no app is frontmost, when reading fails, or on unsupported
+/// platforms. Costs one X11 round-trip on Linux, four `objc_msgSend`s on
+/// macOS — well under a millisecond at the 1 Hz polling cadence in
+/// `openlogi-gui::app_watcher`.
 #[must_use]
 pub fn frontmost_bundle_id() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         macos::frontmost_bundle_id()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::frontmost_bundle_id()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         None
     }
