@@ -94,10 +94,14 @@ fn main() {
 
     let mut initial_delay_secs: f64 = 2.0;
     let mut between_ms: u64 = 200;
+    let mut verbose = false;
     let mut actions: Vec<Action> = Vec::new();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--verbose" | "-v" => {
+                verbose = true;
+            }
             "--delay" => {
                 let val = args.next().unwrap_or_else(|| {
                     eprintln!("--delay requires a value");
@@ -144,6 +148,14 @@ fn main() {
         std::process::exit(1);
     }
 
+    let default_level = if verbose { "debug" } else { "warn" };
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
+
     // On Linux, initialise the uinput device eagerly so we can print its node
     // path before the countdown — giving time to attach evtest in another terminal.
     #[cfg(target_os = "linux")]
@@ -179,11 +191,12 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "Usage: inject_action [--delay <secs>] [--between <ms>] <Action> [<Action> ...]\n\
+        "Usage: inject_action [--delay <secs>] [--between <ms>] [-v] <Action> [<Action> ...]\n\
          \n\
          Options:\n\
            --delay <secs>    seconds to wait before first injection (default: 2)\n\
            --between <ms>    milliseconds between actions (default: 200)\n\
+           -v, --verbose     enable debug logging (shows which code path fires)\n\
          \n\
          Actions: LeftClick RightClick MiddleClick\n\
                   Copy Paste Cut Undo Redo SelectAll Find Save\n\
