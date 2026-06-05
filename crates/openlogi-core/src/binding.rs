@@ -1390,13 +1390,12 @@ mod linux {
             keys.insert(k);
         }
 
+        // Only scroll axes: the device never emits cursor movement, so leaving
+        // out REL_X/REL_Y keeps libinput from classifying it as a pointer —
+        // which can otherwise cause injected key/wheel events to be grabbed by
+        // pointer-grabbing X11 clients or routed oddly by some Wayland compositors.
         let mut axes = AttributeSet::<RelativeAxisCode>::default();
-        for a in [
-            RelativeAxisCode::REL_X,
-            RelativeAxisCode::REL_Y,
-            RelativeAxisCode::REL_WHEEL,
-            RelativeAxisCode::REL_HWHEEL,
-        ] {
+        for a in [RelativeAxisCode::REL_WHEEL, RelativeAxisCode::REL_HWHEEL] {
             axes.insert(a);
         }
 
