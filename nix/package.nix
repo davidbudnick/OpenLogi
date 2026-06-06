@@ -62,9 +62,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
     cargo-bundle # assembles OpenLogi.app from [package.metadata.bundle]
   ];
 
-  # Only the GUI crate. The CLI (`openlogi`) doesn't depend on gpui_platform, so
-  # it can't share the `buildFeatures` below — package it separately if wanted.
-  cargoBuildFlags = [ "--package=openlogi-gui" ];
+  # The GUI plus the headless agent (embedded below as a login-item helper). The
+  # CLI (`openlogi`) doesn't depend on gpui_platform, so it can't share the
+  # `buildFeatures` below — package it separately if wanted. The agent pulls no
+  # new vendored deps (tarpc/objc2 already arrive via the GUI), so `cargoHash`
+  # above is unchanged by adding it.
+  cargoBuildFlags = [ "--package=openlogi-gui" "--package=openlogi-agent" ];
 
   # Required on darwin: compile Metal shaders at runtime instead of invoking the
   # proprietary `metal` compiler at build time (it isn't in the Nix sandbox).
@@ -88,6 +91,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
     export CARGO_BUNDLE_SKIP_BUILD=true
     app_path=$(cargo bundle --release | xargs)
     popd
+
+    # Embed the headless agent as a nested login-item helper. Mirrors xtask's
+    # embed_agent_helper, since this install path runs `cargo bundle` directly
+    # rather than `xtask bundle-macos`.
+    helper="$app_path/Contents/Library/LoginItems/OpenLogiAgent.app"
+    mkdir -p "$helper/Contents/MacOS"
+    cp "$release_target/openlogi-agent" "$helper/Contents/MacOS/openlogi-agent"
+    cp crates/openlogi-agent/macos/Info.plist "$helper/Contents/Info.plist"
 
     mkdir -p "$out/Applications"
     mv "$app_path" "$out/Applications/"
