@@ -810,14 +810,10 @@ impl AppState {
         self.send_ipc(crate::ipc_client::Command::ReloadConfig);
     }
 
-    /// Toggle the macOS menu-bar (status item) icon, persist it, and apply it
-    /// live. Turning it off hides the item *and* pins the app to Regular
-    /// activation, so it stays an ordinary Dock app rather than being left with
-    /// neither a window, a Dock icon, nor a menu-bar icon. No-op when unchanged.
-    ///
-    /// macOS-only: the toggle that calls it exists only there, so gating avoids
-    /// an unused-method warning on other platforms.
-    #[cfg(target_os = "macos")]
+    /// Toggle the menu-bar (status item) icon and persist it. The icon is
+    /// hosted by the always-on agent now, so this saves the preference and asks
+    /// the agent to apply it (show / hide its `NSStatusItem`). No-op when
+    /// unchanged.
     pub fn set_show_in_menu_bar(&mut self, enabled: bool) {
         if self.config.app_settings.show_in_menu_bar == enabled {
             return;
@@ -826,13 +822,7 @@ impl AppState {
         if let Err(e) = self.config.save_atomic() {
             warn!(error = %e, "could not persist show-in-menu-bar setting");
         }
-        #[cfg(target_os = "macos")]
-        {
-            crate::platform::tray::set_visible(enabled);
-            if !enabled {
-                crate::platform::tray::show_in_dock();
-            }
-        }
+        self.send_ipc(crate::ipc_client::Command::ReloadConfig);
     }
 
     /// Toggle the opt-in update check and persist it. No immediate side

@@ -113,14 +113,11 @@ impl SettingsView {
 
         cx.update_global::<AppState, _>(|s, _| s.set_language(language));
         // `t!` reads the locale at render time, so a repaint is what actually
-        // applies the switch; the app menu and status item aren't in any
-        // window's view tree, so re-title them too. The status item's device
-        // line lives on the spawn loop, so ask it to re-localize the whole menu
-        // rather than writing from here.
+        // applies the switch; the app menu isn't in any window's view tree, so
+        // re-title it too. (The menu-bar item is the agent's now and localizes
+        // independently.)
         cx.refresh_windows();
         crate::app_menu::rebuild(cx);
-        #[cfg(target_os = "macos")]
-        crate::platform::tray::request_refresh();
     }
 }
 

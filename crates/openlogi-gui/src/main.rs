@@ -107,25 +107,6 @@ fn main() -> Result<()> {
     // Pairing still runs in the GUI for now (modal, user-initiated).
     let (pairing_ctrl_tx, mut pairing_evt_rx) = watchers::pairing::spawn();
 
-    // Status-item (tray) click events (Open / Quit), drained by a dedicated
-    // task below. macOS-only: there is no status item on other platforms.
-    #[cfg(target_os = "macos")]
-    let (tray_tx, mut tray_rx) =
-        tokio::sync::mpsc::unbounded_channel::<platform::tray::TrayEvent>();
-
-    // Whether the menu-bar (status item) icon is shown. Read once here for the
-    // initial install/visibility; live toggles go through `set_show_in_menu_bar`.
-    #[cfg(target_os = "macos")]
-    let show_in_menu_bar = initial_config.app_settings.show_in_menu_bar;
-
-    // macOS autostart passes `--minimized` (see launch_agent.rs) to come up in
-    // the tray with no window — only meaningful when the tray is on. No tray
-    // elsewhere (or with it off), so the window always opens.
-    #[cfg(target_os = "macos")]
-    let start_minimized = show_in_menu_bar && std::env::args().any(|a| a == "--minimized");
-    #[cfg(not(target_os = "macos"))]
-    let start_minimized = false;
-
     // `with_assets` registers the embedded app logo ([`app_assets`]) plus the
     // lucide SVGs that back `gpui_component::IconName`; without it `img()` /
     // `Icon` would fail to load.
@@ -148,34 +129,12 @@ fn main() -> Result<()> {
         // window-opening task below.
         platform::updater::install(cx, &initial_config.app_settings);
 
-        // Status-item / tray (macOS only). Always created so the "Show in menu
-        // bar" setting can show / hide it live; its initial visibility follows
-        // the stored setting. The window opens at launch and on demand from its
-        // menu.
-        #[cfg(target_os = "macos")]
-        {
-            platform::tray::install(tray_tx);
-            platform::tray::set_visible(show_in_menu_bar);
-        }
-
-        #[cfg(target_os = "macos")]
-        cx.on_app_quit(|_| async {
-            platform::tray::uninstall();
-        })
-        .detach();
-
-        // Keep the activation policy in step with window presence — but only
-        // while the menu-bar icon is on. Last window closed + tray on → drop to
-        // accessory (no Dock/menu bar); tray off → stay a regular Dock app so
-        // there's still a way back in. `open_main_window` restores Regular
-        // whenever a window opens.
-        #[cfg(target_os = "macos")]
+        // On-demand GUI: quit when the last window closes. The agent stays
+        // resident and keeps remapping (and hosts the menu-bar item from which
+        // the GUI is reopened), so nothing needs the GUI process to linger.
         cx.on_window_closed(|cx, _| {
-            let tray_on = cx
-                .try_global::<AppState>()
-                .is_some_and(|s| s.app_settings().show_in_menu_bar);
-            if tray_on && cx.windows().is_empty() {
-                platform::tray::hide_from_dock();
+            if cx.windows().is_empty() {
+                cx.quit();
             }
         })
         .detach();
@@ -193,16 +152,7 @@ fn main() -> Result<()> {
                         ipc_commands,
                     ));
                 }
-                if !start_minimized {
-                    open_main_window(&inventories, cx);
-                }
-                #[cfg(target_os = "macos")]
-                if start_minimized {
-                    // Autostart: live in the menu-bar tray with no window.
-                    platform::tray::hide_from_dock();
-                }
-                #[cfg(target_os = "macos")]
-                platform::tray::set_device_lines(&tray_device_lines(cx));
+                open_main_window(&inventories, cx);
             });
 
             // First launch only: offer to opt in to the update check, since it
@@ -260,8 +210,6 @@ fn main() -> Result<()> {
                                     update.status.accessibility_granted;
                             });
                             cx.refresh_windows();
-                            #[cfg(target_os = "macos")]
-                            platform::tray::set_device_lines(&tray_device_lines(cx));
                         });
                     }
                     Some(event) = pairing_evt_rx.recv() => {
@@ -271,24 +219,6 @@ fn main() -> Result<()> {
                     }
                     else => break,
                 }
-            }
-        })
-        .detach();
-
-        // Drain status-item menu clicks (macOS only). Kept off the main select
-        // loop above because `tokio::select!` branches can't be `#[cfg]`-gated,
-        // and the whole status item is macOS-only anyway.
-        #[cfg(target_os = "macos")]
-        cx.spawn(async move |cx| {
-            while let Some(event) = tray_rx.recv().await {
-                cx.update(|cx| match event {
-                    platform::tray::TrayEvent::Open => open_main_window(&[], cx),
-                    platform::tray::TrayEvent::Quit => cx.quit(),
-                    platform::tray::TrayEvent::Refresh => {
-                        platform::tray::refresh_labels();
-                        platform::tray::set_device_lines(&tray_device_lines(cx));
-                    }
-                });
             }
         })
         .detach();
@@ -364,8 +294,6 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
             .is_ok()
         {
             cx.activate(true);
-            #[cfg(target_os = "macos")]
-            platform::tray::show_in_dock();
             return;
         }
     }
@@ -389,27 +317,9 @@ fn open_main_window(inventories: &[DeviceInventory], cx: &mut gpui::App) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
             cx.default_global::<windows::WindowRegistry>().main = Some(handle);
             cx.activate(true);
-            #[cfg(target_os = "macos")]
-            platform::tray::show_in_dock();
         }
         Err(e) => warn!(error = %e, "could not open the main window"),
     }
-}
-
-/// Format the status-item device line from the live [`AppState`], e.g.
-/// `"MX Master 3S · 80%"`, or a placeholder when nothing is connected.
-#[cfg(target_os = "macos")]
-fn tray_device_lines(cx: &gpui::App) -> Vec<String> {
-    cx.try_global::<AppState>().map_or_else(Vec::new, |state| {
-        state
-            .device_list
-            .iter()
-            .map(|record| match &record.battery {
-                Some(battery) => format!("{} · {}%", record.display_name, battery.percentage),
-                None => record.display_name.clone(),
-            })
-            .collect()
-    })
 }
 
 fn init_tracing() {
