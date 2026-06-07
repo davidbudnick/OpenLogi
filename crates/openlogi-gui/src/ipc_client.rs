@@ -13,10 +13,12 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use openlogi_agent_core::ipc::{AgentClient, AgentStatus};
+use openlogi_agent_core::ipc::{AgentClient, AgentStatus, PairingUpdate};
 use openlogi_core::config::Lighting;
 use openlogi_core::device::DeviceInventory;
-use openlogi_hid::{DeviceRoute, DpiInfo, SmartShiftMode, SmartShiftStatus, WriteError};
+use openlogi_hid::{
+    DeviceRoute, DpiInfo, ReceiverSelector, SmartShiftMode, SmartShiftStatus, WriteError,
+};
 use tarpc::client;
 use tarpc::context;
 use tarpc::tokio_serde::formats::Bincode;
@@ -51,13 +53,21 @@ pub enum Command {
     /// CGEventTap, so the system dialog must name (and authorize) the *agent*
     /// binary, not the GUI — prompting locally would grant the wrong process.
     RequestAccessibilityPrompt,
+    /// Pairing (agent-owned, since it opens the receiver): begin a session,
+    /// pair a discovered device by address, or cancel. Events stream back via
+    /// the separate [`IpcClient::pairing`] long-poll, not these commands.
+    StartPairing(ReceiverSelector),
+    PairDevice([u8; 6]),
+    CancelPairing,
 }
 
-/// Handle the GUI holds to talk to the agent: a stream of poll snapshots and a
-/// sender for device commands.
+/// Handle the GUI holds to talk to the agent: a stream of poll snapshots, a
+/// sender for device commands, and a stream of pairing events (long-polled on a
+/// separate connection so a held pairing poll never stalls inventory).
 pub struct IpcClient {
     pub updates: mpsc::UnboundedReceiver<PollUpdate>,
     pub commands: mpsc::UnboundedSender<Command>,
+    pub pairing: mpsc::UnboundedReceiver<PairingUpdate>,
 }
 
 /// Spawn the IPC client thread. Returns immediately; the thread connects (and
@@ -66,6 +76,7 @@ pub struct IpcClient {
 pub fn spawn(poll_period: Duration) -> IpcClient {
     let (update_tx, updates) = mpsc::unbounded_channel();
     let (commands, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
+    let (pairing_tx, pairing) = mpsc::unbounded_channel();
 
     let spawn_result = std::thread::Builder::new()
         .name("openlogi-ipc-client".into())
@@ -81,6 +92,10 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
                 }
             };
             rt.block_on(async move {
+                // Pairing events stream on their own connection + long-poll so a
+                // held next_pairing never delays the 2s inventory/status poll.
+                tokio::spawn(pairing_poll(pairing_tx));
+
                 let mut client: Option<AgentClient> = None;
                 // The agent is normally started by launchd, but the GUI launches
                 // it if the socket is down — invaluable in dev (one `cargo run` of
@@ -119,7 +134,49 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
         warn!(error = %e, "could not spawn IPC client thread — agent state unavailable");
     }
 
-    IpcClient { updates, commands }
+    IpcClient {
+        updates,
+        commands,
+        pairing,
+    }
+}
+
+/// Long-poll the agent's pairing event stream on a dedicated connection, pushing
+/// each [`PairingUpdate`] to the GUI. Runs for the client's lifetime; when no
+/// session is active the agent returns `None` at its hold window and we re-poll.
+async fn pairing_poll(tx: mpsc::UnboundedSender<PairingUpdate>) {
+    let mut client: Option<AgentClient> = None;
+    loop {
+        match poll_pairing_once(&mut client, &tx).await {
+            Ok(true) => {}       // delivered an event / hold elapsed; keep polling
+            Ok(false) => return, // GUI dropped the pairing receiver → stop
+            Err(()) => {
+                client = None; // connection dropped (agent restart) — reconnect
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+}
+
+/// One pairing long-poll. `Ok(false)` means the GUI receiver is gone; `Err` a
+/// dropped connection the caller should reconnect.
+async fn poll_pairing_once(
+    client: &mut Option<AgentClient>,
+    tx: &mpsc::UnboundedSender<PairingUpdate>,
+) -> Result<bool, ()> {
+    let Ok(client) = ensure(client).await else {
+        tokio::time::sleep(Duration::from_secs(1)).await; // agent not up yet
+        return Ok(true);
+    };
+    // The agent holds the poll ~20s; give the request a bit longer so the agent
+    // answers (with an event or None) before the client deadline fires.
+    let mut ctx = context::current();
+    ctx.deadline = Instant::now() + Duration::from_secs(25);
+    match client.next_pairing(ctx).await {
+        Ok(Some(update)) => Ok(tx.send(update).is_ok()),
+        Ok(None) => Ok(true),
+        Err(_) => Err(()),
+    }
 }
 
 /// Launch the agent once when the socket is unreachable. Detached `spawn` so it
@@ -218,6 +275,11 @@ async fn handle(client: &mut Option<AgentClient>, cmd: Command) -> Result<(), ()
             .request_accessibility_prompt(ctx)
             .await
             .map_err(|_| ())?,
+        Command::StartPairing(selector) => {
+            client.start_pairing(ctx, selector).await.map_err(|_| ())?;
+        }
+        Command::PairDevice(address) => client.pair_device(ctx, address).await.map_err(|_| ())?,
+        Command::CancelPairing => client.cancel_pairing(ctx).await.map_err(|_| ())?,
     }
     Ok(())
 }

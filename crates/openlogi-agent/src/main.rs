@@ -7,6 +7,7 @@
 //! AppKit run loop the menu bar requires.
 
 mod launch_agent;
+mod pairing;
 mod server;
 #[cfg(target_os = "macos")]
 mod status_item;
@@ -107,15 +108,21 @@ async fn run(config: Config) {
     let shared = orchestrator.lock().await.shared();
     let hook_installed = Arc::new(AtomicBool::new(false));
 
+    // Pairing runs in the agent (it owns device I/O); the GUI drives it over IPC.
+    let pairing = Arc::new(pairing::PairingManager::new(shared.clone()));
+
     // The HID++ control watcher (gesture button, DPI/ModeShift button, thumb
     // wheel) needs no Accessibility permission — start it up front. It reads the
-    // shared maps and dispatches bound actions itself.
+    // shared maps and dispatches bound actions itself; the two pairing flags let
+    // it release its capture session while a pairing session owns the receiver.
     watchers::gesture::spawn(
         shared.hook_bindings.clone(),
         shared.gesture_bindings.clone(),
         shared.dpi_cycle.clone(),
         shared.capture_channel.clone(),
         shared.thumbwheel_sensitivity.clone(),
+        shared.pairing_active.clone(),
+        shared.capture_idle.clone(),
     );
 
     let mut inventory_rx = watchers::inventory::spawn(Duration::from_secs(2));
@@ -129,6 +136,7 @@ async fn run(config: Config) {
                 orchestrator: Arc::clone(&orchestrator),
                 shared: shared.clone(),
                 hook_installed: Arc::clone(&hook_installed),
+                pairing: Arc::clone(&pairing),
             };
             tokio::spawn(server::run(server, socket_path));
         }

@@ -10,11 +10,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt as _;
 use openlogi_agent_core::hardware;
-use openlogi_agent_core::ipc::{Agent, AgentStatus, PROTOCOL_VERSION};
+use openlogi_agent_core::ipc::{Agent, AgentStatus, PROTOCOL_VERSION, PairingUpdate};
 use openlogi_agent_core::orchestrator::{Orchestrator, SharedRuntime};
 use openlogi_core::config::{Config, Lighting};
 use openlogi_core::device::DeviceInventory;
-use openlogi_hid::{DeviceRoute, DpiInfo, SmartShiftMode, SmartShiftStatus, WriteError};
+use openlogi_hid::{
+    DeviceRoute, DpiInfo, ReceiverSelector, SmartShiftMode, SmartShiftStatus, WriteError,
+};
+
+use crate::pairing::PairingManager;
 use openlogi_hook::Hook;
 use tarpc::context::Context;
 use tarpc::server::{BaseChannel, Channel as _};
@@ -28,6 +32,7 @@ pub struct AgentServer {
     pub orchestrator: Arc<Mutex<Orchestrator>>,
     pub shared: SharedRuntime,
     pub hook_installed: Arc<AtomicBool>,
+    pub pairing: Arc<PairingManager>,
 }
 
 impl Agent for AgentServer {
@@ -107,6 +112,22 @@ impl Agent for AgentServer {
 
     async fn request_accessibility_prompt(self, _: Context) {
         Hook::prompt_accessibility();
+    }
+
+    async fn start_pairing(self, _: Context, selector: ReceiverSelector) {
+        self.pairing.start(selector).await;
+    }
+
+    async fn pair_device(self, _: Context, address: [u8; 6]) {
+        self.pairing.pair(address);
+    }
+
+    async fn cancel_pairing(self, _: Context) {
+        self.pairing.cancel();
+    }
+
+    async fn next_pairing(self, _: Context) -> Option<PairingUpdate> {
+        self.pairing.next_update().await
     }
 }
 

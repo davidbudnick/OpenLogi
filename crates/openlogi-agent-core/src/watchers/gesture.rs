@@ -19,7 +19,7 @@
 //! way regardless.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -78,6 +78,8 @@ pub fn spawn(
     dpi_cycle: Arc<RwLock<DpiCycleState>>,
     capture_channel: CaptureChannel,
     thumbwheel_sensitivity: ThumbwheelSensitivity,
+    pairing_active: Arc<AtomicBool>,
+    capture_idle: Arc<AtomicBool>,
 ) {
     thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -96,6 +98,8 @@ pub fn spawn(
             dpi_cycle,
             capture_channel,
             thumbwheel_sensitivity,
+            pairing_active,
+            capture_idle,
         ));
     });
 }
@@ -134,6 +138,8 @@ async fn manage(
     dpi_cycle: Arc<RwLock<DpiCycleState>>,
     capture_channel: CaptureChannel,
     thumbwheel_sensitivity: ThumbwheelSensitivity,
+    pairing_active: Arc<AtomicBool>,
+    capture_idle: Arc<AtomicBool>,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<CapturedInput>();
     let mut current: Option<(DeviceRoute, bool)> = None;
@@ -155,9 +161,16 @@ async fn manage(
                 );
             }
             _ = ticker.tick() => {
-                let target = dpi_cycle.read().ok().and_then(|guard| guard.target.clone());
-                let sensitivity = thumbwheel_sensitivity.load(Ordering::Relaxed);
-                let want = target.map(|t| (t, thumbwheel_armed(&button_bindings, sensitivity)));
+                // While pairing, release the capture session so run_pairing can
+                // own the receiver's HID node (one process can't read it through
+                // two channels). The pairing manager waits on `capture_idle`.
+                let want = if pairing_active.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    let target = dpi_cycle.read().ok().and_then(|guard| guard.target.clone());
+                    let sensitivity = thumbwheel_sensitivity.load(Ordering::Relaxed);
+                    target.map(|t| (t, thumbwheel_armed(&button_bindings, sensitivity)))
+                };
                 if want == current {
                     continue;
                 }
@@ -168,6 +181,7 @@ async fn manage(
                     let _ = stop.send(());
                 }
                 current.clone_from(&want);
+                capture_idle.store(want.is_none(), Ordering::Relaxed);
                 if let Some((route, capture_thumbwheel)) = want {
                     let (stop_tx, stop_rx) = oneshot::channel();
                     let sink = tx.clone();

@@ -8,7 +8,10 @@
 
 use openlogi_core::config::Lighting;
 use openlogi_core::device::DeviceInventory;
-use openlogi_hid::{DeviceRoute, DpiInfo, SmartShiftMode, SmartShiftStatus, WriteError};
+use openlogi_hid::{
+    DeviceRoute, DpiInfo, PasskeyMethod, ReceiverSelector, SmartShiftMode, SmartShiftStatus,
+    WriteError,
+};
 use serde::{Deserialize, Serialize};
 
 /// Wire-protocol version. Bumped only on a breaking change to the types below —
@@ -26,6 +29,34 @@ pub struct AgentStatus {
     pub launch_at_login: bool,
     pub protocol_version: u32,
     pub agent_version: String,
+}
+
+/// A nearby unpaired device surfaced during Bolt discovery, in the minimal form
+/// the GUI needs: a name to show and the address to pair by. The agent keeps the
+/// full [`openlogi_hid::DiscoveredDevice`] (kind, auth bits) internally, keyed by
+/// this address, so the wire form needs neither the non-serializable device-kind
+/// nor the auth bitfield.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FoundDevice {
+    pub address: [u8; 6],
+    pub name: String,
+}
+
+/// One step of a pairing session, streamed to the GUI via [`Agent::next_pairing`].
+/// Mirrors `openlogi_hid::PairingEvent` but in a wire-safe form — the discovered
+/// device collapses to [`FoundDevice`] and the terminal error to a string.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum PairingUpdate {
+    /// Discovery (Bolt) / the pairing lock (Unifying) is open.
+    Searching,
+    /// Bolt only: a nearby unpaired device was discovered.
+    DeviceFound(FoundDevice),
+    /// Bolt only: the device asks the user to authenticate with a passkey.
+    Passkey(PasskeyMethod),
+    /// A device paired into `slot`.
+    Paired { slot: u8 },
+    /// The flow ended without pairing a device (carries a human-readable detail).
+    Failed(String),
 }
 
 #[tarpc::service]
@@ -60,4 +91,18 @@ pub trait Agent {
     /// Prompt for Accessibility from the agent, so the system dialog names the
     /// agent — the actually-trusted binary — rather than the GUI.
     async fn request_accessibility_prompt();
+    /// Begin a pairing session against `selector`. The agent owns all device
+    /// I/O, so pairing (which opens the receiver) runs here, not in the GUI —
+    /// the GUI opening a receiver channel would clash with the agent's live
+    /// capture session on the same Bolt receiver.
+    async fn start_pairing(selector: ReceiverSelector);
+    /// Bolt: pair with a discovered device by its address (from a prior
+    /// [`PairingUpdate::DeviceFound`]).
+    async fn pair_device(address: [u8; 6]);
+    /// Abort the in-progress pairing session.
+    async fn cancel_pairing();
+    /// Long-poll the next pairing step. Returns `None` when the agent's hold
+    /// window elapses with no event (the GUI simply re-polls); the GUI drives
+    /// this in a loop while the Add Device window is open.
+    async fn next_pairing() -> Option<PairingUpdate>;
 }

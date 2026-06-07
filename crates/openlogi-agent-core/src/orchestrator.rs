@@ -11,7 +11,7 @@
 //! (still valid) values — exactly the GUI's "window never opened" behaviour.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 
 use openlogi_core::config::Config;
@@ -47,6 +47,14 @@ pub struct SharedRuntime {
     pub dpi_cycle: Arc<RwLock<DpiCycleState>>,
     pub thumbwheel_sensitivity: Arc<AtomicI32>,
     pub capture_channel: CaptureChannel,
+    /// Set while a pairing session runs: the gesture watcher then releases its
+    /// capture session so `run_pairing` can own the receiver's HID node (one
+    /// process still can't read the same node through two channels).
+    pub pairing_active: Arc<AtomicBool>,
+    /// Published by the gesture watcher: `true` when it holds no capture
+    /// session, so the pairing manager can wait for capture to actually release
+    /// before opening the receiver.
+    pub capture_idle: Arc<AtomicBool>,
 }
 
 /// Owns the config + device selection and keeps [`SharedRuntime`] in sync.
@@ -76,6 +84,8 @@ impl Orchestrator {
                 config.app_settings.thumbwheel_sensitivity,
             )),
             capture_channel: Arc::new(RwLock::new(None)),
+            pairing_active: Arc::new(AtomicBool::new(false)),
+            capture_idle: Arc::new(AtomicBool::new(true)),
         };
         let orch = Self {
             config,

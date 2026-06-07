@@ -58,7 +58,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::app::AppView;
 use crate::state::AppState;
-use openlogi_agent_core::watchers;
 
 #[allow(
     clippy::too_many_lines,
@@ -102,10 +101,8 @@ fn main() -> Result<()> {
     let ipc_client::IpcClient {
         updates: mut ipc_updates,
         commands: ipc_commands,
+        pairing: mut ipc_pairing,
     } = ipc_client::spawn(std::time::Duration::from_secs(2));
-
-    // Pairing still runs in the GUI for now (modal, user-initiated).
-    let (pairing_ctrl_tx, mut pairing_evt_rx) = watchers::pairing::spawn();
 
     // `with_assets` registers the embedded app logo ([`app_assets`]) plus the
     // lucide SVGs that back `gpui_component::IconName`; without it `img()` /
@@ -119,9 +116,9 @@ fn main() -> Result<()> {
         gpui_component::init(cx);
         app_menu::install(cx);
 
-        // Publish the pairing control sender + initial UI state so the Add
-        // Device window's buttons can drive the watcher via globals.
-        cx.set_global(windows::add_device::PairingControl(pairing_ctrl_tx));
+        // Seed the Add Device window's initial state. Its buttons drive pairing
+        // through the agent over IPC; the agent's pairing long-poll feeds events
+        // back into this global via the select loop below.
         cx.set_global(windows::add_device::PairingUi::Idle);
 
         // Publish the shared updater and, if the user opted in, run one
@@ -212,9 +209,9 @@ fn main() -> Result<()> {
                             cx.refresh_windows();
                         });
                     }
-                    Some(event) = pairing_evt_rx.recv() => {
+                    Some(update) = ipc_pairing.recv() => {
                         cx.update(|cx| {
-                            windows::add_device::apply_event(cx, event);
+                            windows::add_device::apply_update(cx, update);
                         });
                     }
                     else => break,
