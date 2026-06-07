@@ -10,6 +10,7 @@
 //! The single client connection is re-established automatically if the agent
 //! restarts (launchd `KeepAlive`), so the GUI recovers without user action.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use openlogi_agent_core::ipc::{AgentClient, AgentStatus};
@@ -20,7 +21,7 @@ use tarpc::client;
 use tarpc::context;
 use tarpc::tokio_serde::formats::Bincode;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 /// A poll snapshot pushed to the GPUI loop every `poll_period`.
 pub struct PollUpdate {
@@ -72,12 +73,21 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
             };
             rt.block_on(async move {
                 let mut client: Option<AgentClient> = None;
+                // The agent is normally started by launchd, but launch it once if
+                // the socket is down — invaluable in dev (one `cargo run` of the
+                // GUI brings the whole system up) and a prod fallback. One-shot so
+                // a missing / failing binary can't become a respawn loop.
+                let mut agent_launched = false;
                 let mut interval = tokio::time::interval(poll_period);
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
                             if poll(&mut client, &update_tx).await.is_err() {
                                 client = None; // drop a dead connection; reconnect next tick
+                            }
+                            if client.is_none() && !agent_launched {
+                                spawn_agent();
+                                agent_launched = true;
                             }
                         }
                         cmd = cmd_rx.recv() => {
@@ -95,6 +105,42 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
     }
 
     IpcClient { updates, commands }
+}
+
+/// Launch the agent once when the socket is unreachable. Detached `spawn` so it
+/// outlives the GUI (the agent is the always-on process); logs and moves on if
+/// the binary can't be found / started — the user may start it via launchd or by
+/// hand, and the poll loop keeps retrying the connection regardless.
+fn spawn_agent() {
+    let Some(path) = agent_binary_path() else {
+        warn!(
+            "agent not reachable and its binary wasn't found next to the GUI — \
+             start it via launchd or by hand"
+        );
+        return;
+    };
+    match std::process::Command::new(&path).spawn() {
+        Ok(_) => info!(path = %path.display(), "agent not running — launched it"),
+        Err(e) => warn!(error = %e, path = %path.display(), "could not launch the agent"),
+    }
+}
+
+/// Resolve the agent executable relative to the running GUI: a sibling in the
+/// cargo target dir (dev), else the embedded `OpenLogiAgent.app` login-item
+/// helper (packaged build).
+fn agent_binary_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let sibling = dir.join("openlogi-agent");
+    if sibling.exists() {
+        return Some(sibling);
+    }
+    // Packaged: …/OpenLogi.app/Contents/MacOS/openlogi-gui → the helper at
+    // …/OpenLogi.app/Contents/Library/LoginItems/OpenLogiAgent.app/Contents/MacOS/openlogi-agent
+    let helper = dir
+        .parent()?
+        .join("Library/LoginItems/OpenLogiAgent.app/Contents/MacOS/openlogi-agent");
+    helper.exists().then_some(helper)
 }
 
 /// Ensure a live client, connecting on demand. `Err` means the agent is
