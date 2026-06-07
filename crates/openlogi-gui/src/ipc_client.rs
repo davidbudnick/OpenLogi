@@ -11,7 +11,7 @@
 //! restarts (launchd `KeepAlive`), so the GUI recovers without user action.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use openlogi_agent_core::ipc::{AgentClient, AgentStatus};
 use openlogi_core::config::Lighting;
@@ -22,6 +22,11 @@ use tarpc::context;
 use tarpc::tokio_serde::formats::Bincode;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
+
+/// Minimum gap between agent-launch attempts while the socket is unreachable.
+/// Long enough that a missing or crash-looping binary can't be respawned in a
+/// tight loop, short enough that a quit / crashed agent is recovered promptly.
+const SPAWN_RETRY_PERIOD: Duration = Duration::from_secs(30);
 
 /// A poll snapshot pushed to the GPUI loop every `poll_period`.
 pub struct PollUpdate {
@@ -73,11 +78,14 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
             };
             rt.block_on(async move {
                 let mut client: Option<AgentClient> = None;
-                // The agent is normally started by launchd, but launch it once if
-                // the socket is down — invaluable in dev (one `cargo run` of the
-                // GUI brings the whole system up) and a prod fallback. One-shot so
-                // a missing / failing binary can't become a respawn loop.
-                let mut agent_launched = false;
+                // The agent is normally started by launchd, but the GUI launches
+                // it if the socket is down — invaluable in dev (one `cargo run` of
+                // the GUI brings the whole system up) and a prod fallback. Retry
+                // while the socket stays down, but rate-limited (see
+                // SPAWN_RETRY_PERIOD) so a missing / failing binary can't become a
+                // tight respawn loop, while a crashed / quit agent is still
+                // recovered without restarting the GUI.
+                let mut last_spawn_attempt: Option<Instant> = None;
                 let mut interval = tokio::time::interval(poll_period);
                 loop {
                     tokio::select! {
@@ -85,9 +93,12 @@ pub fn spawn(poll_period: Duration) -> IpcClient {
                             if poll(&mut client, &update_tx).await.is_err() {
                                 client = None; // drop a dead connection; reconnect next tick
                             }
-                            if client.is_none() && !agent_launched {
+                            if client.is_none()
+                                && last_spawn_attempt
+                                    .is_none_or(|t| t.elapsed() >= SPAWN_RETRY_PERIOD)
+                            {
                                 spawn_agent();
-                                agent_launched = true;
+                                last_spawn_attempt = Some(Instant::now());
                             }
                         }
                         cmd = cmd_rx.recv() => {
