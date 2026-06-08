@@ -14,7 +14,8 @@
     reason = "fields are read once their owning component lands in UI.md phases 2–4"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use gpui::{App, Global};
 use openlogi_core::config::{AppSettings, Config, Lighting};
@@ -141,6 +142,9 @@ pub struct AppState {
     /// Consecutive failed SmartShift read attempts, keyed by
     /// [`DeviceRecord::config_key`] — mirrors [`Self::dpi_load_attempts`].
     smartshift_load_attempts: BTreeMap<String, u8>,
+    /// Glow-overlay cache paths currently being generated off-thread, so the
+    /// render loop spawns each generation once instead of every frame.
+    glow_inflight: HashSet<PathBuf>,
     /// Devices whose SmartShift was just written optimistically and still need a
     /// confirming re-read, keyed by [`DeviceRecord::config_key`]. A fire-and-
     /// forget write can be rejected/timed-out by a sleeping device, so the panel
@@ -196,6 +200,7 @@ impl AppState {
             dpi_load_attempts: BTreeMap::new(),
             smartshift_by_device: BTreeMap::new(),
             smartshift_load_attempts: BTreeMap::new(),
+            glow_inflight: HashSet::new(),
             smartshift_pending_confirm: std::collections::BTreeSet::new(),
             device_list,
             config,
@@ -801,6 +806,23 @@ impl AppState {
         self.current_record()
             .and_then(|r| self.config.lighting(&r.config_key))
             .unwrap_or_default()
+    }
+
+    /// The stored lighting config for `key`, or `None` when unset.
+    #[must_use]
+    pub fn lighting_for(&self, key: &str) -> Option<Lighting> {
+        self.config.lighting(key)
+    }
+
+    /// Claim `path` for off-thread glow generation; `true` if it wasn't already
+    /// in flight (the caller should then spawn the worker).
+    pub fn mark_glow_inflight(&mut self, path: PathBuf) -> bool {
+        self.glow_inflight.insert(path)
+    }
+
+    /// Release a finished glow-generation slot.
+    pub fn clear_glow_inflight(&mut self, path: &Path) {
+        self.glow_inflight.remove(path);
     }
 
     /// Persist a new lighting config for the active device and push it to the

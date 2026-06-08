@@ -32,6 +32,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 thiserror.workspace = true
 ureq.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
 rust-i18n = "4"
 sys-locale = "0.3.2"
 gpui-updater = { git = "https://github.com/AprilNEA/gpui-updater", tag = "v0.0.4", features = ["gpui"] }
