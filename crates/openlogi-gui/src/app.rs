@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gpui::{
     AnyElement, App, AppContext as _, BorrowAppContext as _, BoxShadow, Context, Div, Entity,
     FontWeight, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
@@ -83,8 +85,14 @@ impl DetailTab {
         let caps = record
             .capabilities
             .unwrap_or_else(|| Capabilities::presumed_from_kind(record.kind));
+        // A real keyboard exposes reprogrammable controls (media / G-keys) that
+        // the HID++ probe reports as `buttons`, but those aren't the mouse remap
+        // section — so a keyboard only earns the Buttons tab when it's also a
+        // pointing device (i.e. actually a mouse the registry mislabelled, the
+        // #127 case). Non-keyboards keep the capability-driven behaviour.
+        let pointer_device = caps.pointer || record.kind != DeviceKind::Keyboard;
         let mut tabs = Vec::new();
-        if caps.buttons {
+        if caps.buttons && pointer_device {
             tabs.push(Self::Buttons);
         }
         if caps.pointer {
@@ -134,6 +142,44 @@ pub struct AppView {
 }
 
 impl AppView {
+    /// Generate any missing keyboard glow overlays off the render thread, once
+    /// each. The gallery only reads the cached PNG ([`lighting_overlay`]); when a
+    /// worker finishes it refreshes the windows and the next render shows it.
+    fn ensure_glow(cx: &mut Context<Self>) {
+        let jobs: Vec<GlowJob> = {
+            let Some(state) = cx.try_global::<AppState>() else {
+                return;
+            };
+            state
+                .device_list
+                .iter()
+                .filter_map(|record| glow_job(state, record))
+                .collect()
+        };
+        for job in jobs {
+            let first = cx.update_global::<AppState, _>(|state, _| {
+                state.mark_glow_attempted(job.cache.clone())
+            });
+            if !first {
+                continue;
+            }
+            let GlowJob { cache, depot, hex } = job;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::asset::ensure_glow_png(&depot, &hex).is_some());
+            });
+            cx.spawn(async move |_view, cx| {
+                if matches!(rx.await, Ok(true)) {
+                    cx.update_global::<AppState, _>(|state, cx| {
+                        state.mark_glow_ready(cache);
+                        cx.refresh_windows();
+                    });
+                }
+            })
+            .detach();
+        }
+    }
+
     /// Construct the root view and its child entities.
     pub fn new(_inventories: &[DeviceInventory], cx: &mut Context<Self>) -> Self {
         let cache = AssetResolver::new();
@@ -304,6 +350,7 @@ impl Render for AppView {
             window.set_window_title("OpenLogi");
             return Self::accessibility_gate(pal, cx);
         }
+        Self::ensure_glow(cx);
 
         let has_device = cx
             .try_global::<AppState>()
@@ -530,8 +577,9 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
                     return div().into_any_element();
                 };
                 let key = record.config_key.clone();
+                let glow = lighting_overlay(&record, cx);
                 let view = view.clone();
-                device_card(&record, focused, pal)
+                device_card(&record, focused, glow, pal)
                     .id(("device-card", idx))
                     .cursor_pointer()
                     .hover(move |s| s.bg(pal.surface))
@@ -547,13 +595,57 @@ fn device_gallery(cx: &mut Context<AppView>) -> impl IntoElement {
     )
 }
 
+/// Path to the cached inter-key colour overlay for a light-up keyboard, if it
+/// has been generated. Generation runs off the render thread in
+/// [`AppView::ensure_glow`]; this lookup only stats the cache. `None` unless the
+/// device is a keyboard with lighting enabled and the overlay exists yet.
+fn lighting_overlay(record: &DeviceRecord, cx: &App) -> Option<PathBuf> {
+    if record.kind != DeviceKind::Keyboard {
+        return None;
+    }
+    let state = cx.try_global::<AppState>()?;
+    let lighting = state
+        .lighting_for(&record.config_key)
+        .filter(|l| l.enabled)?;
+    let asset = record.asset.as_ref()?;
+    asset.hero_image_path.as_ref()?;
+    let path = crate::asset::glow_path(&asset.depot, &lighting.color);
+    state.glow_is_ready(&path).then_some(path)
+}
+
+/// A pending off-thread glow generation: the cache path to fill plus the inputs
+/// [`crate::asset::ensure_glow_png`] needs.
+struct GlowJob {
+    cache: PathBuf,
+    depot: String,
+    hex: String,
+}
+
+/// The glow job for `record` when it's a keyboard with lighting enabled and a
+/// resolved photo; `None` otherwise.
+fn glow_job(state: &AppState, record: &DeviceRecord) -> Option<GlowJob> {
+    if record.kind != DeviceKind::Keyboard {
+        return None;
+    }
+    let lighting = state
+        .lighting_for(&record.config_key)
+        .filter(|l| l.enabled)?;
+    let asset = record.asset.as_ref()?;
+    asset.hero_image_path.as_ref()?;
+    Some(GlowJob {
+        cache: crate::asset::glow_path(&asset.depot, &lighting.color),
+        depot: asset.depot.clone(),
+        hex: lighting.color,
+    })
+}
+
 /// A device card in the Home gallery: the device photo floating on the window
 /// background above the name, connectivity dot, kind/slot, and battery. Fixed
 /// width so cards stay equal in the scrollable row. The active device wears a
 /// faint accent ring; inactive cards reserve the same 1px border in a
 /// transparent colour so selection never nudges the layout. Returns a bare
 /// [`Div`] so the gallery can wire the click handler.
-fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
+fn device_card(record: &DeviceRecord, active: bool, glow: Option<PathBuf>, pal: Palette) -> Div {
     let ring = if active {
         rgb(theme::ACCENT_BLUE).into()
     } else {
@@ -570,12 +662,23 @@ fn device_card(record: &DeviceRecord, active: bool, pal: Palette) -> Div {
         .border_color(ring)
         .child(
             div()
+                .relative()
                 .w_full()
                 .h(px(theme::GALLERY_PHOTO_H))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(device_image(record, pal)),
+                .child(device_image(record, pal))
+                .when_some(glow, |this, path| {
+                    this.child(
+                        img(path)
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full()
+                            .opacity(0.6),
+                    )
+                }),
         )
         .child(
             v_flex()

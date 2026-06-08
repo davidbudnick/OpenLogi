@@ -178,6 +178,25 @@ impl Orchestrator {
         if !changed {
             return;
         }
+        // Re-apply saved lighting to any device that just arrived — a first
+        // sighting at startup or a replug (which drops then re-adds it). A
+        // keyboard forgets its colour across a power cycle, so without this a
+        // replug goes dark until the user re-picks the colour.
+        for dev in &devices {
+            if self
+                .devices
+                .iter()
+                .any(|prev| prev.config_key == dev.config_key)
+            {
+                continue;
+            }
+            let Some(route) = dev.route.clone() else {
+                continue;
+            };
+            if let Some(lighting) = self.config.lighting(&dev.config_key).filter(|l| l.enabled) {
+                crate::hardware::set_lighting_in_background(Some(route), &lighting);
+            }
+        }
         self.devices = devices;
         self.current = pick_current(&self.devices, self.config.selected_device());
         self.rebuild();
