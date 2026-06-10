@@ -35,6 +35,7 @@ use crate::asset::AssetResolver;
 use crate::data::mouse_buttons::{Action, Binding, ButtonId, GestureDirection};
 use crate::state::devices::{build_device_list, pick_initial_device, sort_device_list};
 use openlogi_agent_core::bindings::{bindings_for, gesture_bindings_for};
+use openlogi_agent_core::ipc::AgentStatus;
 
 /// Default DPI value applied to a fresh AppState. Matches a common Logitech
 /// mid-range mouse and keeps the dot-preview visually obvious from frame one.
@@ -173,6 +174,14 @@ pub struct AppState {
     /// rebuild, and "apply now" device changes (DPI / SmartShift / lighting)
     /// go out as their own commands. The GUI never opens a device itself.
     ipc_commands: mpsc::UnboundedSender<crate::ipc_client::Command>,
+    /// Latest agent status snapshot from the IPC poll (agent version, hook
+    /// install state, launch-at-login). Kept so the diagnostics report can name
+    /// the agent build alongside the GUI's. `None` until the first poll lands.
+    last_status: Option<AgentStatus>,
+    /// Latest raw inventory snapshot from the IPC poll. The derived
+    /// [`Self::device_list`] drops per-device transports and the receiver model;
+    /// diagnostics reads this to report precise connection type and receivers.
+    last_inventory: Vec<DeviceInventory>,
 }
 
 impl AppState {
@@ -215,6 +224,8 @@ impl AppState {
             device_list,
             config,
             ipc_commands,
+            last_status: None,
+            last_inventory: Vec::new(),
         };
         state.button_bindings = state.bindings_for_current();
         state.gesture_bindings = state.gesture_bindings_for_current();
@@ -234,6 +245,40 @@ impl AppState {
     #[must_use]
     pub fn ipc_sender(&self) -> mpsc::UnboundedSender<crate::ipc_client::Command> {
         self.ipc_commands.clone()
+    }
+
+    /// Cache the latest IPC poll snapshot (raw inventory + agent status) for the
+    /// diagnostics report. Called on every poll, independent of whether the
+    /// device list actually changed.
+    pub fn store_agent_snapshot(&mut self, inventory: &[DeviceInventory], status: &AgentStatus) {
+        self.last_inventory = inventory.to_vec();
+        self.last_status = Some(status.clone());
+    }
+
+    /// The latest agent status snapshot, or `None` before the first poll lands.
+    #[must_use]
+    pub fn last_status(&self) -> Option<&AgentStatus> {
+        self.last_status.as_ref()
+    }
+
+    /// The latest raw inventory snapshot — used by diagnostics for transports and
+    /// receiver model info the derived device list doesn't carry.
+    #[must_use]
+    pub fn last_inventory(&self) -> &[DeviceInventory] {
+        &self.last_inventory
+    }
+
+    /// Config schema version and the number of devices with saved configuration —
+    /// surfaced in the diagnostics report.
+    #[must_use]
+    pub fn config_summary(&self) -> (u32, usize) {
+        (self.config.schema_version, self.config.devices.len())
+    }
+
+    /// The cached DPI-discovery status for `key`, for the diagnostics report.
+    #[must_use]
+    pub fn dpi_status_for(&self, key: &str) -> Option<DpiStatus> {
+        self.dpi_by_device.get(key).cloned()
     }
 
     /// Ask the agent to fire the macOS Accessibility prompt. The agent owns the

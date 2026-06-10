@@ -35,6 +35,7 @@ mod app_menu;
 mod asset;
 mod components;
 mod data;
+mod diagnostics;
 mod i18n;
 mod ipc_client;
 mod mouse_model;
@@ -264,6 +265,7 @@ fn main() -> Result<()> {
                                 state.scanning = false;
                                 state.accessibility_granted =
                                     update.status.accessibility_granted;
+                                state.store_agent_snapshot(&update.inventory, &update.status);
                             });
                             cx.refresh_windows();
                         });

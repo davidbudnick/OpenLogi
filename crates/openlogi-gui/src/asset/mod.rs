@@ -107,6 +107,18 @@ impl AssetResolver {
         self.has_bundle
     }
 
+    /// `true` when the asset index (`index.json`) loaded from one of the read
+    /// roots. `false` means no curated renders resolve — devices show the
+    /// silhouette. Surfaced in the diagnostics report.
+    pub fn index_loaded(&self) -> bool {
+        self.index.is_some()
+    }
+
+    /// Number of device models in the loaded index, or `None` if no index loaded.
+    pub fn index_entry_count(&self) -> Option<usize> {
+        self.index.as_ref().map(|index| index.devices.len())
+    }
+
     pub fn resolve(
         &self,
         model: &DeviceModelInfo,
