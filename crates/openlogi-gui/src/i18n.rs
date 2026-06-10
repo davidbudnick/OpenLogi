@@ -2,10 +2,10 @@
 //!
 //! Translations live in `crates/openlogi-gui/locales/*.yml` and are loaded at
 //! compile time by the `rust_i18n::i18n!` macro in `main.rs`. Crowdin manages one
-//! file per locale: `en.yml` is the source file, and `ja` / `ru` / `zh-CN` /
-//! `zh-HK` / `zh-TW` / `it` are downloaded as translated YAML files. Call sites
-//! use the [`tr!`](crate::tr) helper (or `rust_i18n::t!`) with the **English
-//! string as the key**.
+//! file per locale: `en.yml` is the source file, and every other locale in
+//! [`SUPPORTED`] is downloaded as a translated YAML file. Call sites use the
+//! [`tr!`](crate::tr) helper (or `rust_i18n::t!`) with the **English string as
+//! the key**.
 //!
 //! The current locale is a process-global atomic inside `rust_i18n`. Setting it
 //! re-localizes both our own call sites *and* gpui-component's built-in widget
