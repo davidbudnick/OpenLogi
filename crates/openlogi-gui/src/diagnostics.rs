@@ -1,9 +1,4 @@
-//! Gathers live GUI state into a privacy-filtered [`DiagnosticsReport`].
-//!
-//! Thin adapter: the data shape and Markdown rendering live in
-//! [`openlogi_core::diagnostics`]; this maps the device list, agent status, and
-//! asset resolver onto it — refining the connection type from the device's
-//! announced transports and dropping every unique identifier on the way.
+//! Maps live GUI state onto the platform-free [`openlogi_core::diagnostics`] report.
 
 use std::path::Path;
 
@@ -19,8 +14,7 @@ use openlogi_hid::DeviceRoute;
 use crate::asset::AssetResolver;
 use crate::state::{AppState, DpiStatus};
 
-/// Build the report from the current app state. Falls back to an
-/// agent-disconnected, no-device report if the global isn't installed yet.
+/// Build the report from the current app state, defaulting to an empty report before the global is installed.
 #[must_use]
 pub fn collect(cx: &App) -> DiagnosticsReport {
     let resolver = AssetResolver::new();
@@ -146,9 +140,7 @@ fn find_paired<'a>(
     })
 }
 
-/// Refine the HID++ route into a user-facing connection type. A Bolt route is a
-/// receiver; a direct one is disambiguated to wired/Bluetooth via the device's
-/// announced transports when those are known.
+/// Refine the HID++ route into a user-facing connection type via the device's announced transports.
 fn connection_for(
     route: Option<&DeviceRoute>,
     transports: Option<openlogi_core::device::DeviceTransports>,
@@ -180,8 +172,7 @@ fn dpi_summary(status: Option<DpiStatus>) -> Option<String> {
     }
 }
 
-/// Replace the home-directory prefix of `path` with `~` so the report doesn't
-/// leak the account's username.
+/// Replace the home-directory prefix of `path` with `~` so the report doesn't leak the username.
 fn redact_home(path: &Path) -> String {
     let shown = path.display().to_string();
     if let Some(home) = std::env::var_os("HOME") {

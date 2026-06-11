@@ -174,13 +174,9 @@ pub struct AppState {
     /// rebuild, and "apply now" device changes (DPI / SmartShift / lighting)
     /// go out as their own commands. The GUI never opens a device itself.
     ipc_commands: mpsc::UnboundedSender<crate::ipc_client::Command>,
-    /// Latest agent status snapshot from the IPC poll (agent version, hook
-    /// install state, launch-at-login). Kept so the diagnostics report can name
-    /// the agent build alongside the GUI's. `None` until the first poll lands.
+    /// Latest agent status snapshot from the IPC poll, kept for the diagnostics report.
     last_status: Option<AgentStatus>,
-    /// Latest raw inventory snapshot from the IPC poll. The derived
-    /// [`Self::device_list`] drops per-device transports and the receiver model;
-    /// diagnostics reads this to report precise connection type and receivers.
+    /// Latest raw inventory snapshot from the IPC poll, kept for diagnostics transports and receivers.
     last_inventory: Vec<DeviceInventory>,
 }
 
@@ -247,9 +243,7 @@ impl AppState {
         self.ipc_commands.clone()
     }
 
-    /// Cache the latest IPC poll snapshot (raw inventory + agent status) for the
-    /// diagnostics report. Called on every poll, independent of whether the
-    /// device list actually changed.
+    /// Cache the latest IPC poll snapshot (raw inventory + agent status) for the diagnostics report.
     pub fn store_agent_snapshot(&mut self, inventory: &[DeviceInventory], status: &AgentStatus) {
         self.last_inventory = inventory.to_vec();
         self.last_status = Some(status.clone());
@@ -261,15 +255,13 @@ impl AppState {
         self.last_status.as_ref()
     }
 
-    /// The latest raw inventory snapshot — used by diagnostics for transports and
-    /// receiver model info the derived device list doesn't carry.
+    /// The latest raw inventory snapshot, used by diagnostics for transports and receivers.
     #[must_use]
     pub fn last_inventory(&self) -> &[DeviceInventory] {
         &self.last_inventory
     }
 
-    /// Config schema version and the number of devices with saved configuration —
-    /// surfaced in the diagnostics report.
+    /// Config schema version and the number of devices with saved configuration.
     #[must_use]
     pub fn config_summary(&self) -> (u32, usize) {
         (self.config.schema_version, self.config.devices.len())

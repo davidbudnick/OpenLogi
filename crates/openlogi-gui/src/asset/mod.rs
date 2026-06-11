@@ -107,9 +107,7 @@ impl AssetResolver {
         self.has_bundle
     }
 
-    /// `true` when the asset index (`index.json`) loaded from one of the read
-    /// roots. `false` means no curated renders resolve — devices show the
-    /// silhouette. Surfaced in the diagnostics report.
+    /// `true` when the asset index loaded; `false` means devices show the silhouette.
     pub fn index_loaded(&self) -> bool {
         self.index.is_some()
     }

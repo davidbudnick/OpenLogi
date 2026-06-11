@@ -1,13 +1,4 @@
-//! Privacy-filtered diagnostics report for support tickets.
-//!
-//! The report is the GUI analogue of `openlogi list`: enough to reproduce a bug
-//! (device kind, capabilities, transports, connection, render state, agent/GUI
-//! versions, IPC protocol, OS, config) without doxxing the user. Unique hardware
-//! identifiers — serial numbers, unit IDs, the Bolt receiver UID — are excluded
-//! *by construction*: these structs simply have no field to hold them, so a
-//! future edit can't leak one by forgetting to redact. The collector lives in
-//! the GUI crate; this module owns the data shape and the Markdown rendering so
-//! both stay unit-testable in the platform-free core.
+//! Privacy-filtered diagnostics report for support tickets — model-level only, no unique identifiers by construction.
 
 use std::fmt::Write as _;
 
@@ -27,8 +18,7 @@ pub enum AssetSource {
     None,
 }
 
-/// How a device reaches the host. Refined past the raw HID++ route using the
-/// device's announced transports where available.
+/// How a device reaches the host, refined past the raw HID++ route via announced transports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
@@ -38,8 +28,7 @@ pub enum ConnectionKind {
     Unknown,
 }
 
-/// Whether a curated render resolved for the device, or it fell back to the
-/// silhouette — the direct signal behind "no preview image" reports.
+/// Whether a curated render resolved, or the device fell back to the silhouette.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state", content = "depot")]
 pub enum RenderState {
@@ -65,8 +54,7 @@ pub struct DeviceDiag {
     pub connection: ConnectionKind,
     pub online: bool,
     pub battery: Option<BatteryInfo>,
-    /// Measured HID++ capabilities, or `None` for a device never probed since the
-    /// agent started — itself a useful signal when a panel is missing.
+    /// Measured HID++ capabilities, or `None` if never probed since the agent started.
     pub capabilities: Option<Capabilities>,
     /// Human DPI summary (current + supported range), or `None` when not queried.
     pub dpi: Option<String>,
@@ -569,7 +557,6 @@ mod tests {
         assert!(md.contains("Model: 2b35a (wpid: 4093, model-ids: b35a/0000/0000, ext-model: 02)"));
         assert!(md.contains("Transports: eQuad"));
         assert!(md.contains("Render: ⚠️ none (silhouette) · Slot 2"));
-        // The mouse: resolved render, wired transport, DPI summary, no battery.
         assert!(md.contains("- MX Master 3S — mouse"));
         assert!(md.contains("DPI: 1600 dpi (range 200–8000, 5 steps)"));
         assert!(md.contains("Transports: USB"));
@@ -589,8 +576,6 @@ mod tests {
 
     #[test]
     fn omits_unique_identifiers_and_footer() {
-        // There is no field for a serial / unit ID, so none can render. Guard the
-        // guarantee, and confirm the old privacy footer is gone.
         let md = sample().to_markdown();
         assert!(!md.contains("Serial"));
         assert!(!md.to_lowercase().contains("unit id"));

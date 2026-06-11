@@ -26,8 +26,7 @@ pub struct AboutView {
     updater: Entity<Updater>,
     #[allow(dead_code, reason = "held to keep the updater observation alive")]
     updater_obs: Subscription,
-    /// `true` for the brief window after a diagnostics copy, so the button can
-    /// flip its label to a confirmation. Reset by a short spawned timer.
+    /// `true` for ~2s after a diagnostics copy, so the button can flip its label to a confirmation.
     copied: bool,
 }
 
@@ -49,9 +48,7 @@ impl AboutView {
         }
     }
 
-    /// A "Copy Diagnostics" button that puts a privacy-filtered report on the
-    /// clipboard for pasting into a GitHub issue, then confirms the copy by
-    /// flipping its label for ~2s.
+    /// A "Copy Diagnostics" button that puts a privacy-filtered report on the clipboard, then confirms for ~2s.
     fn diagnostics_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = if self.copied {
             tr!("Copied!")
