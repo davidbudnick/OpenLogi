@@ -4,6 +4,14 @@ on:
   push:
     tags:
       - "v*"
+  # Manual, publish-free full build: produces the signed/notarized DMGs and
+  # the signed exes as run artifacts. Everything publish-side (GitHub
+  # Release, R2 / channels/stable/latest.json, homebrew-tap) is tag-gated
+  # below, so a branch dispatch cannot create a release named after the
+  # branch, overwrite the updater channel, or ping the tap. Do NOT dispatch
+  # on an existing v* tag — that re-enters the full publish path against an
+  # immutable release.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -160,8 +168,19 @@ jobs:
           path: dist/*.dmg
 
   windows:
-    name: Windows GUI (x86_64)
+    name: Windows GUI (${{ matrix.arch }})
+    # Both arches build on the x86_64 runner — arm64 as an MSVC cross-compile.
+    # Native Arm runners are not an option: artifact-signing-action refuses to
+    # run on them, while the signing itself is arch-agnostic over the PE file.
     runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            target: x86_64-pc-windows-msvc
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
     # A hung signing/login call must become a normal failure (which publish
     # tolerates), not a 6-hour stall: publish waits for this job to reach a
     # terminal state before its own gate is even evaluated. The GUI release
@@ -169,6 +188,12 @@ jobs:
     # runtime on the 4-core runner, hence a looser budget than the ~8-minute
     # CLI-only runs needed.
     timeout-minutes: 60
+    env:
+      # Static CRT: a bare exe must not depend on the VC++ Redistributable —
+      # the v0.6.6 exe died on clean machines with "VCRUNTIME140.dll was not
+      # found". The explicit --target below keeps the flag off host build
+      # scripts, which RUSTFLAGS would otherwise also reach.
+      RUSTFLAGS: -C target-feature=+crt-static
     permissions:
       # Mint an OIDC token so azure/login can exchange it for an Azure access token
       # via a federated credential — no client secret is stored in GitHub.
@@ -182,6 +207,8 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       # No rust-cache here: this workflow runs only on tag refs, whose saved
       # caches no future tag can restore (and no default-branch job produces a
@@ -232,7 +259,7 @@ jobs:
       # once it has been runtime-tested on a real Windows box; the CLI stays
       # cargo-install-only, as on the other platforms.
       - name: Build OpenLogi GUI
-        run: cargo build --release -p openlogi-gui
+        run: cargo build --release -p openlogi-gui --target ${{ matrix.target }}
 
       # Federated (passwordless) login. Requires an app registration whose federated
       # credential subject is `repo:AprilNEA/OpenLogi:environment:release`, granted the
@@ -253,7 +280,7 @@ jobs:
           endpoint: ${{ steps.azure_config.outputs.AZURE_SIGNING_ENDPOINT }}
           signing-account-name: ${{ steps.azure_config.outputs.AZURE_SIGNING_ACCOUNT }}
           certificate-profile-name: ${{ steps.azure_config.outputs.AZURE_CERT_PROFILE }}
-          files: ${{ github.workspace }}\target\release\openlogi-gui.exe
+          files: ${{ github.workspace }}\target\${{ matrix.target }}\release\openlogi-gui.exe
           # Timestamping is mandatory: without it the signature expires after
           # 3 days. The URL must stay http — SignTool rejects an https /tr up
           # front ("SignTool Error: Invalid Timestamp URL", v0.6.5) before
@@ -268,7 +295,7 @@ jobs:
       - name: Verify the binary is signed
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature target\release\openlogi-gui.exe
+          $sig = Get-AuthenticodeSignature target\${{ matrix.target }}\release\openlogi-gui.exe
           $sig | Format-List
           # The signing step above already fails on error; this guards against it
           # silently producing an unsigned or corrupted binary. NotSigned and
@@ -287,11 +314,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           # Renaming after signing is safe: Authenticode lives in the PE file.
           $ref = $env:GITHUB_REF_NAME -replace '/', '-'
-          Copy-Item target\release\openlogi-gui.exe "dist\OpenLogi-$ref-windows-x86_64.exe"
+          Copy-Item target\${{ matrix.target }}\release\openlogi-gui.exe "dist\OpenLogi-$ref-windows-${{ matrix.arch }}.exe"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: OpenLogi-windows-x86_64
+          name: OpenLogi-windows-${{ matrix.arch }}
           path: dist/*.exe
           # 'warn' (the default) would let a no-exe job stay green, and publish
           # would then die at the by-name download instead of shipping DMG-only.
@@ -299,6 +326,9 @@ jobs:
 
   release-notes:
     name: Generate release notes
+    # Tag runs only: the generator diffs from the previous tag, and its only
+    # consumer (publish) is tag-gated too.
+    if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -375,7 +405,7 @@ jobs:
     # re-runs as windows' dependent and fails against the now-immutable release
     # (and would overwrite immutable-cached R2 objects). A missed .exe ships
     # with the next tag instead.
-    if: ${{ !cancelled() && needs.macos.result == 'success' && needs.release-notes.result == 'success' }}
+    if: ${{ github.ref_type == 'tag' && !cancelled() && needs.macos.result == 'success' && needs.release-notes.result == 'success' }}
     permissions:
       contents: write
     steps:
@@ -392,12 +422,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Present only when the independent Windows job succeeded; skipped otherwise.
+      # Best-effort per arch — deliberately NOT gated on needs.windows.result:
+      # that is the matrix aggregate, and the proven x86_64 exe must not be
+      # held hostage by the experimental arm64 leg (or vice versa). Each leg
+      # uploads its artifact only after its exe is built, signed, and verified,
+      # so whatever arrived is safe to ship. A pattern download that matches
+      # nothing succeeds with an empty dist (unlike by-name, which fails).
       - uses: actions/download-artifact@v8
-        if: ${{ needs.windows.result == 'success' }}
         with:
-          name: OpenLogi-windows-x86_64
+          pattern: OpenLogi-windows-*
           path: dist
+          merge-multiple: true
 
       - uses: actions/download-artifact@v8
         with:
@@ -415,6 +450,18 @@ jobs:
           # hashed alone.
           shopt -s nullglob
           sha256sum *.dmg *.exe > SHA256SUMS
+
+      # softprops' `files` can't list a glob that matches nothing without
+      # tripping fail_on_unmatched_files, and the exe set now varies per arch
+      # leg — record whether any exe actually arrived.
+      - name: Detect shipped Windows binaries
+        id: windows_exes
+        run: |
+          if compgen -G 'dist/*.exe' > /dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Load static updater publishing config from 1Password
         id: r2_config
@@ -455,7 +502,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y minisign
 
-      - name: Sign updater artifacts
+      - name: Sign release artifacts with minisign
         env:
           OPENLOGI_UPDATE_MINISIGN_PUBLIC_KEY: ${{ steps.r2_config.outputs.OPENLOGI_UPDATE_MINISIGN_PUBLIC_KEY }}
           OPENLOGI_UPDATE_MINISIGN_SECRET_KEY: ${{ steps.r2_config.outputs.OPENLOGI_UPDATE_MINISIGN_SECRET_KEY }}
@@ -469,7 +516,13 @@ jobs:
           # newline mangled to a space — see the GitHub App key note above).
           # `tr -d` drops any wrapping whitespace before decoding.
           printf '%s' "$OPENLOGI_UPDATE_MINISIGN_SECRET_KEY" | tr -d '[:space:]' | base64 -d > "$key_file"
-          for artifact in dist/*.dmg; do
+          # The exes get the same minisign treatment as the DMGs: manual
+          # verification today, and the future Windows auto-updater needs the
+          # detached signatures to exist for every shipped version. nullglob:
+          # the exe set is best-effort per arch leg, so *.exe may match
+          # nothing; the DMGs are guaranteed by the publish gate.
+          shopt -s nullglob
+          for artifact in dist/*.dmg dist/*.exe; do
             minisign -S -m "$artifact" -s "$key_file" -x "$artifact.minisig" -W
             minisign -V -m "$artifact" -P "$OPENLOGI_UPDATE_MINISIGN_PUBLIC_KEY" -x "$artifact.minisig"
           done
@@ -499,15 +552,16 @@ jobs:
           release_prefix="s3://${R2_BUCKET}/releases/${GITHUB_REF_NAME}"
           channel_manifest="s3://${R2_BUCKET}/channels/stable/latest.json"
 
-          # The exe's distribution channel is the GitHub Release; nothing in
-          # the updater bucket references it (latest.json and the minisign
-          # loop are dmg-only), so keep it out of the immutable releases/
-          # prefix. SHA256SUMS still lists it — it describes the GitHub
-          # Release's asset set.
+          # The exe's distribution channel is the GitHub Release; latest.json
+          # is still dmg-only, so nothing in the updater bucket references the
+          # exe or its minisig — keep both out of the immutable releases/
+          # prefix until the Windows auto-updater lands. SHA256SUMS still
+          # lists the exes — it describes the GitHub Release's asset set.
           aws s3 cp dist/ "$release_prefix/" \
             --recursive \
             --exclude latest.json \
             --exclude "*.exe" \
+            --exclude "*.exe.minisig" \
             --cache-control "public, max-age=31536000, immutable" \
             --endpoint-url "$endpoint"
 
@@ -530,7 +584,7 @@ jobs:
             dist/*.dmg
             dist/*.minisig
             dist/SHA256SUMS
-            ${{ needs.windows.result == 'success' && 'dist/*.exe' || '' }}
+            ${{ steps.windows_exes.outputs.present == 'true' && 'dist/*.exe' || '' }}
           fail_on_unmatched_files: true
 
   homebrew-tap:
