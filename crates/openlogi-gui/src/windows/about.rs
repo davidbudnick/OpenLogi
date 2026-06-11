@@ -28,6 +28,8 @@ pub struct AboutView {
     updater_obs: Subscription,
     /// `true` for ~2s after a diagnostics copy, so the button can flip its label to a confirmation.
     copied: bool,
+    /// Bumped on each copy so a stale reset timer can't clear a newer confirmation.
+    copied_gen: u64,
 }
 
 impl AboutView {
@@ -45,6 +47,7 @@ impl AboutView {
             updater,
             updater_obs,
             copied: false,
+            copied_gen: 0,
         }
     }
 
@@ -63,14 +66,18 @@ impl AboutView {
                 let report = crate::diagnostics::collect(cx).to_markdown();
                 cx.write_to_clipboard(ClipboardItem::new_string(report));
                 this.copied = true;
+                this.copied_gen = this.copied_gen.wrapping_add(1);
+                let generation = this.copied_gen;
                 cx.notify();
                 cx.spawn(async move |view, cx| {
                     cx.background_executor()
                         .timer(std::time::Duration::from_secs(2))
                         .await;
                     view.update(cx, |view, cx| {
-                        view.copied = false;
-                        cx.notify();
+                        if view.copied_gen == generation {
+                            view.copied = false;
+                            cx.notify();
+                        }
                     })
                     .ok();
                 })

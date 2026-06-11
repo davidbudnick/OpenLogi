@@ -221,14 +221,7 @@ impl DiagnosticsReport {
 
     fn write_devices(&self, out: &mut String) {
         let _ = writeln!(out, "**Devices ({})**", self.devices.len());
-        for r in &self.receivers {
-            let _ = writeln!(
-                out,
-                "- Receiver: {} (VID {:04x} / PID {:04x})",
-                r.name, r.vendor_id, r.product_id
-            );
-        }
-        if self.devices.is_empty() && self.receivers.is_empty() {
+        if self.devices.is_empty() {
             let _ = writeln!(out, "- No devices detected.");
         }
         for d in &self.devices {
@@ -272,6 +265,16 @@ impl DiagnosticsReport {
                 RenderState::Silhouette => "⚠️ none (silhouette)".to_string(),
             };
             let _ = writeln!(out, "  - Render: {render} · {}", slot_label(d.slot));
+        }
+        if !self.receivers.is_empty() {
+            let _ = writeln!(out, "\n**Receivers ({})**", self.receivers.len());
+            for r in &self.receivers {
+                let _ = writeln!(
+                    out,
+                    "- {} (VID {:04x} / PID {:04x})",
+                    r.name, r.vendor_id, r.product_id
+                );
+            }
         }
     }
 }
@@ -536,6 +539,8 @@ mod tests {
         assert!(md.contains("**App**"));
         assert!(md.contains("**Assets**"));
         assert!(md.contains("**Devices (2)**"));
+        assert!(md.contains("**Receivers (1)**"));
+        assert!(md.contains("- Logi Bolt (VID 046d / PID c548)"));
         assert!(md.contains("- OpenLogi (GUI): v0.6.6 (release)"));
         assert!(md.contains("- Agent: v0.6.6 (connected)"));
         assert!(md.contains("- IPC protocol: GUI 1 / agent 1"));
