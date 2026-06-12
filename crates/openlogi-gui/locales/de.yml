@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Bedienungshilfen"
 "Input Monitoring": "Eingabeüberwachung"
 "Bluetooth": "Bluetooth"
+"Input device access": "Input device access"
 "Granted": "Erteilt"
 "Not granted": "Nicht erteilt"
 "Unknown": "Unbekannt"

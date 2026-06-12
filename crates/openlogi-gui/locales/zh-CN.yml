@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "辅助功能"
 "Input Monitoring": "输入监控"
 "Bluetooth": "蓝牙"
+"Input device access": "输入设备访问"
 "Granted": "已授权"
 "Not granted": "未授权"
 "Unknown": "未知"

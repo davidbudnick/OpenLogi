@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "アクセシビリティ"
 "Input Monitoring": "入力監視"
 "Bluetooth": "Bluetooth"
+"Input device access": "入力デバイスアクセス"
 "Granted": "許可済み"
 "Not granted": "未許可"
 "Unknown": "不明"

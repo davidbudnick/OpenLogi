@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Универсальный доступ"
 "Input Monitoring": "Мониторинг ввода"
 "Bluetooth": "Bluetooth"
+"Input device access": "Доступ к устройствам ввода"
 "Granted": "Разрешено"
 "Not granted": "Не разрешено"
 "Unknown": "Неизвестно"

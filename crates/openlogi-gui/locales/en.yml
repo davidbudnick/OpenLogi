@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Accessibility"
 "Input Monitoring": "Input Monitoring"
 "Bluetooth": "Bluetooth"
+"Input device access": "Input device access"
 "Granted": "Granted"
 "Not granted": "Not granted"
 "Unknown": "Unknown"

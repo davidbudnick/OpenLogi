@@ -1506,7 +1506,14 @@ fn footer(pal: Palette, granted: bool) -> impl IntoElement {
         .justify_between()
         .border_t_1()
         .border_color(pal.border)
-        .child(accessibility_status(pal, granted))
+        .child({
+            #[cfg(target_os = "macos")]
+            let el = accessibility_status(pal, granted);
+            #[cfg(not(target_os = "macos"))]
+            let el = div().into_any_element();
+            let _ = granted;
+            el
+        })
         .child(
             div()
                 .text_xs()
@@ -1518,6 +1525,7 @@ fn footer(pal: Palette, granted: bool) -> impl IntoElement {
 /// Footer Accessibility-permission indicator. Granted → a muted green-dot
 /// status; not granted → an amber-dot affordance that requests the grant on
 /// click (the native prompt + System Settings, via [`open_accessibility_settings`]).
+#[cfg(target_os = "macos")]
 fn accessibility_status(pal: Palette, granted: bool) -> AnyElement {
     if granted {
         // Reassurance only — kept deliberately quiet: a small dimmed dot and

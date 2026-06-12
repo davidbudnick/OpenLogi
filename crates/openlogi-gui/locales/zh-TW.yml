@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "輔助使用"
 "Input Monitoring": "輸入監控"
 "Bluetooth": "藍牙"
+"Input device access": "輸入裝置存取"
 "Granted": "已授權"
 "Not granted": "未授權"
 "Unknown": "未知"

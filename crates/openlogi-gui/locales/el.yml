@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Προσβασιμότητα"
 "Input Monitoring": "Παρακολούθηση εισόδου"
 "Bluetooth": "Bluetooth"
+"Input device access": "Input device access"
 "Granted": "Παραχωρήθηκε"
 "Not granted": "Δεν παραχωρήθηκε"
 "Unknown": "Άγνωστο"

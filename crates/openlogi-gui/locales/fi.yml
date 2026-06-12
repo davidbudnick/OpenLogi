@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Käyttöapu"
 "Input Monitoring": "Syötteen valvonta"
 "Bluetooth": "Bluetooth"
+"Input device access": "Input device access"
 "Granted": "Myönnetty"
 "Not granted": "Ei myönnetty"
 "Unknown": "Tuntematon"

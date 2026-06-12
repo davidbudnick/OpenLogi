@@ -187,6 +187,7 @@ _version: 1
 "Accessibility": "Tilgjengelighet"
 "Input Monitoring": "Inndataovervåking"
 "Bluetooth": "Bluetooth"
+"Input device access": "Input device access"
 "Granted": "Innvilget"
 "Not granted": "Ikke innvilget"
 "Unknown": "Ukjent"
