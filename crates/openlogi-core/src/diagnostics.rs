@@ -23,6 +23,7 @@ pub enum AssetSource {
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionKind {
     BoltReceiver,
+    UnifyingReceiver,
     BluetoothDirect,
     Wired,
     Unknown,
@@ -343,6 +344,7 @@ fn kind_label(kind: DeviceKind) -> &'static str {
 fn connection_label(connection: ConnectionKind) -> &'static str {
     match connection {
         ConnectionKind::BoltReceiver => "Logi Bolt receiver",
+        ConnectionKind::UnifyingReceiver => "Logi Unifying receiver",
         ConnectionKind::BluetoothDirect => "Bluetooth (direct)",
         ConnectionKind::Wired => "Wired (USB)",
         ConnectionKind::Unknown => "unknown",

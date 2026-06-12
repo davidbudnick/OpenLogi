@@ -53,11 +53,23 @@ fn xdg_base(env_value: Option<OsString>, fallback: &[&str]) -> Result<PathBuf, P
     }
 }
 
+/// The raw XDG config home directory (without the `openlogi` subdirectory).
+///
+/// Honours an absolute `$XDG_CONFIG_HOME`; falls back to `~/.config`.
+/// Useful when placing files that belong to other apps under the same base
+/// (e.g. systemd user units at `$XDG_CONFIG_HOME/systemd/user/`).
+pub fn xdg_config_home() -> Result<PathBuf, PathsError> {
+    match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(v) if Path::new(&v).is_absolute() => Ok(PathBuf::from(v)),
+        _ => Ok(home()?.join(".config")),
+    }
+}
+
 /// Directory holding the user's `config.toml`.
 ///
 /// `$XDG_CONFIG_HOME/openlogi`, default `~/.config/openlogi`.
 pub fn config_dir() -> Result<PathBuf, PathsError> {
-    xdg_base(std::env::var_os("XDG_CONFIG_HOME"), &[".config"])
+    Ok(xdg_config_home()?.join(APP_DIR))
 }
 
 /// Full path to the user config file.

@@ -7,10 +7,11 @@ use gpui::{
     prelude::FluentBuilder as _, px, relative, rgb,
 };
 use gpui_component::{
-    Icon, IconName,
+    Icon, IconName, Sizable as _,
     description_list::{DescriptionItem, DescriptionList},
     h_flex,
     scroll::ScrollableElement as _,
+    spinner::Spinner,
     tab::TabBar,
     tooltip::Tooltip,
     v_flex,
@@ -21,6 +22,8 @@ use openlogi_core::device::{
 use openlogi_hid::DeviceRoute;
 use tracing::info;
 
+use openlogi_agent_core::ipc::InventoryHealth;
+
 use crate::app_menu::{CloseWindow, Minimize, Zoom};
 use crate::asset::AssetResolver;
 use crate::components::carousel::Carousel;
@@ -28,7 +31,7 @@ use crate::components::dpi_panel::DpiPanel;
 use crate::components::lighting_panel::LightingPanel;
 use crate::components::smartshift_panel::SmartShiftPanel;
 use crate::mouse_model::view::MouseModelView;
-use crate::state::{AppState, DeviceRecord};
+use crate::state::{AgentLink, AppState, DeviceRecord};
 use crate::theme::{self, FOOTER_H, HEADER_H, Palette};
 
 /// Which screen the root view is showing.
@@ -77,22 +80,24 @@ impl DetailTab {
     /// Each panel is gated on the device's actual [`Capabilities`] — the HID++
     /// features it announced — not on its [`DeviceKind`]. A panel shows iff the
     /// device can do that thing, so a misclassified device can't lose its
-    /// panels (issue #127) and a keyboard's future button config won't be hidden
-    /// by a kind check. Devices we never probed (offline at startup) have no
+    /// panels (issue #127). Devices we never probed (offline at startup) have no
     /// measured capabilities; we presume a set from their kind so a sleeping
     /// mouse still shows its (host-side) button bindings.
+    ///
+    /// The Buttons panel renders a *mouse-model* silhouette with hotspots. It is
+    /// only useful for pointer-type devices (Mouse / Trackball) or when the device
+    /// has a resolved asset that provides its own correct layout. A keyboard that
+    /// exposes ReprogControls via HID++ but has no asset would get the generic
+    /// mouse fallback hotspots — confusing and wrong. Suppress the Buttons tab for
+    /// such devices until a proper keyboard-layout UI is available.
     fn tabs_for(record: &DeviceRecord) -> Vec<Self> {
         let caps = record
             .capabilities
             .unwrap_or_else(|| Capabilities::presumed_from_kind(record.kind));
-        // A real keyboard exposes reprogrammable controls (media / G-keys) that
-        // the HID++ probe reports as `buttons`, but those aren't the mouse remap
-        // section — so a keyboard only earns the Buttons tab when it's also a
-        // pointing device (i.e. actually a mouse the registry mislabelled, the
-        // #127 case). Non-keyboards keep the capability-driven behaviour.
-        let pointer_device = caps.pointer || record.kind != DeviceKind::Keyboard;
+        let can_show_mouse_model = record.asset.is_some()
+            || matches!(record.kind, DeviceKind::Mouse | DeviceKind::Trackball);
         let mut tabs = Vec::new();
-        if caps.buttons && pointer_device {
+        if caps.buttons && can_show_mouse_model {
             tabs.push(Self::Buttons);
         }
         if caps.pointer {
@@ -343,19 +348,55 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pal = theme::palette(cx);
 
-        let granted = cx
+        // Every frame — including the pre-connection and error frames — hangs
+        // off this root, so the window actions (⌘W / ⌘M / zoom) work from the
+        // first frame on, not only once the full UI is up.
+        let root = v_flex()
+            .size_full()
+            .bg(pal.bg)
+            .text_color(pal.text_primary)
+            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window, _| window.zoom_window());
+
+        // The agent is the source of truth for both the permission state and
+        // the device list; `AgentLink` is everything the GUI knows about it.
+        // Until the first snapshot lands, hold a neutral connecting frame:
+        // rendering the permission gate (and then the empty state) off
+        // assumed-denied defaults flashed both screens at every already-set-up
+        // user on launch. A missing global reads the same way — "nothing is
+        // known yet".
+        let link = cx
             .try_global::<AppState>()
-            .is_none_or(|s| s.accessibility_granted);
+            .map_or(AgentLink::Connecting, |s| s.agent_link().clone());
+        let status = match link {
+            AgentLink::Connecting => {
+                window.set_window_title("OpenLogi");
+                return root.child(connecting_body(pal)).into_any_element();
+            }
+            AgentLink::Unreachable => {
+                window.set_window_title("OpenLogi");
+                return root.child(unreachable_body(pal)).into_any_element();
+            }
+            AgentLink::OutdatedGui => {
+                window.set_window_title("OpenLogi");
+                return root.child(outdated_gui_body(pal)).into_any_element();
+            }
+            AgentLink::Ready(status) => status,
+        };
+
+        let granted = status.accessibility_granted;
         if !granted && !self.accessibility_dismissed {
             window.set_window_title("OpenLogi");
-            return Self::accessibility_gate(pal, cx);
+            return root
+                .child(Self::accessibility_gate(pal, cx))
+                .into_any_element();
         }
         Self::ensure_glow(cx);
 
         let has_device = cx
             .try_global::<AppState>()
             .is_some_and(|s| !s.device_list.is_empty());
-        let scanning = cx.try_global::<AppState>().is_some_and(|s| s.scanning);
 
         // Resolve the route. A detail route lives only while its device is
         // still the live selection; if a hot-plug dropped or reordered it (or
@@ -414,19 +455,16 @@ impl Render for AppView {
                 if has_device {
                     device_gallery(cx).into_any_element()
                 } else {
-                    device_empty_state(pal, scanning)
+                    match status.inventory {
+                        InventoryHealth::Scanning => device_scanning_state(pal),
+                        InventoryHealth::Unavailable => scanning_unavailable_state(pal),
+                        InventoryHealth::Ready => device_empty_state(pal),
+                    }
                 },
             )
         };
 
-        v_flex()
-            .size_full()
-            .bg(pal.bg)
-            .text_color(pal.text_primary)
-            .on_action(|_: &CloseWindow, window, _| window.remove_window())
-            .on_action(|_: &Minimize, window, _| window.minimize_window())
-            .on_action(|_: &Zoom, window, _| window.zoom_window())
-            .child(header_el)
+        root.child(header_el)
             .child(content_el)
             .child(footer(pal, granted))
             .into_any_element()
@@ -1223,6 +1261,7 @@ fn sidebar_action(
 fn route_label(route: Option<&DeviceRoute>) -> String {
     match route {
         Some(DeviceRoute::Bolt { .. }) => tr!("Bolt receiver").to_string(),
+        Some(DeviceRoute::Unifying { .. }) => tr!("Unifying receiver").to_string(),
         Some(DeviceRoute::Direct { .. }) => tr!("Direct connection").to_string(),
         None => tr!("Unavailable").to_string(),
     }
@@ -1261,10 +1300,143 @@ fn file_url(path: &std::path::Path) -> String {
     format!("file://{}", path.to_string_lossy().replace(' ', "%20"))
 }
 
-/// Body shown when no device is connected. The inventory watcher keeps polling
-/// (every 2 s) and `AppView`'s `AppState` observer swaps the device UI back in
-/// the moment one appears, so this is purely a wait-and-pair placeholder.
-fn device_empty_state(pal: Palette, scanning: bool) -> AnyElement {
+/// Centered spinner over a muted one-line caption — the quiet "still working"
+/// body shared by the pre-connection frame and the scanning state, so the two
+/// loading phases render as one continuous frame with only the caption
+/// changing. The spinner's repeating animation re-renders the window every
+/// frame while mounted, which is fine *because* both loading states are
+/// bounded: the connecting frame downgrades to the static
+/// [`unreachable_body`] when no snapshot arrives, and the scanning state ends
+/// with the agent reporting `Ready` or `Unavailable`.
+fn loading_body(caption: SharedString, pal: Palette) -> Div {
+    v_flex()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .child(Spinner::new().large().color(pal.text_muted))
+        .child(div().text_sm().text_color(pal.text_muted).child(caption))
+}
+
+/// Static centered notice — icon, headline, muted caption — for the
+/// connection-problem frames. Unlike [`loading_body`] there is deliberately
+/// no animation: these frames can stay up indefinitely, and an infinite
+/// animation would pin the render loop for as long as they do (the same
+/// reasoning as the status dot's fixed glow).
+fn notice_body(headline: SharedString, caption: SharedString, pal: Palette) -> Div {
+    v_flex()
+        .items_center()
+        .justify_center()
+        .gap_4()
+        .p_8()
+        .child(
+            Icon::new(IconName::TriangleAlert)
+                .size_8()
+                .text_color(rgb(theme::STATUS_CONNECTING)),
+        )
+        .child(
+            div()
+                .text_xl()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(headline),
+        )
+        .child(
+            div()
+                .max_w(px(440.))
+                .text_sm()
+                .text_center()
+                .text_color(pal.text_muted)
+                .child(caption),
+        )
+}
+
+/// Whole-window placeholder shown from window-open until the agent's first
+/// IPC snapshot lands — normally a fraction of a second. Deliberately
+/// neutral: no chrome, no claims about permissions or devices. If the agent
+/// stays unreachable, the IPC client downgrades the link and
+/// [`unreachable_body`] replaces this frame.
+fn connecting_body(pal: Palette) -> AnyElement {
+    loading_body(tr!("Connecting to the background service…"), pal)
+        .size_full()
+        .into_any_element()
+}
+
+/// Whole-window frame once the agent has been unreachable well past startup:
+/// the spinner would be a lie at this point. Polling (and the spawn retry)
+/// keeps running underneath, and the first snapshot swaps the real UI back in.
+fn unreachable_body(pal: Palette) -> AnyElement {
+    notice_body(
+        tr!("Can't reach the background service"),
+        tr!("OpenLogi keeps retrying — if this persists, try reinstalling the app."),
+        pal,
+    )
+    .size_full()
+    .into_any_element()
+}
+
+/// Whole-window frame when the *agent* answered with a newer IPC protocol
+/// than this process speaks: the app bundle was updated while this window
+/// stayed open, and only a relaunch loads the new GUI. Without this frame the
+/// window would keep showing live-looking but frozen state.
+fn outdated_gui_body(pal: Palette) -> AnyElement {
+    notice_body(
+        tr!("OpenLogi was updated"),
+        tr!("This window is from the previous version — relaunch to finish the update."),
+        pal,
+    )
+    .size_full()
+    .child(
+        div()
+            .id("relaunch-gui")
+            .mt_1()
+            .px_4()
+            .py_2()
+            .rounded_md()
+            .bg(rgb(theme::ACCENT_BLUE))
+            .text_color(rgb(0x00ff_ffff))
+            .font_weight(FontWeight::MEDIUM)
+            .cursor_pointer()
+            .child(tr!("Relaunch OpenLogi"))
+            .on_click(|_, _, cx| cx.restart()),
+    )
+    .into_any_element()
+}
+
+/// Home body while the agent's first enumeration is still in flight: the
+/// device set is *unknown*, not empty, so this keeps the quiet loading frame
+/// rather than flashing the add-device empty state (icon, headline, CTA) at a
+/// user whose devices are about to appear. Swaps to the gallery, to
+/// [`device_empty_state`], or to [`scanning_unavailable_state`] the moment
+/// the agent reports where its enumeration landed.
+fn device_scanning_state(pal: Palette) -> AnyElement {
+    loading_body(tr!("Scanning for devices…"), pal)
+        .flex_1()
+        .w_full()
+        .min_h_0()
+        .into_any_element()
+}
+
+/// Home body when the agent reports enumeration as broken
+/// ([`InventoryHealth::Unavailable`]): scanning never completed and won't
+/// just by waiting, so showing a spinner (or claiming "no devices") would
+/// both be wrong. The agent keeps retrying and a recovery flows back in as a
+/// regular snapshot.
+fn scanning_unavailable_state(pal: Palette) -> AnyElement {
+    notice_body(
+        tr!("Device scanning is unavailable"),
+        tr!("The background service couldn't scan for devices — check its log for details."),
+        pal,
+    )
+    .flex_1()
+    .w_full()
+    .min_h_0()
+    .into_any_element()
+}
+
+/// Body shown when the agent has completed an enumeration and found no
+/// devices. The polling keeps running and `AppView`'s `AppState` observer
+/// swaps the device UI back in the moment one appears, so this is purely a
+/// wait-and-pair placeholder.
+fn device_empty_state(pal: Palette) -> AnyElement {
     v_flex()
         .flex_1()
         .w_full()
@@ -1282,11 +1454,7 @@ fn device_empty_state(pal: Palette, scanning: bool) -> AnyElement {
             div()
                 .text_xl()
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(if scanning {
-                    tr!("Scanning for devices…")
-                } else {
-                    tr!("No devices connected")
-                }),
+                .child(tr!("No devices connected")),
         )
         .child(
             div()
@@ -1341,7 +1509,14 @@ fn footer(pal: Palette, granted: bool) -> impl IntoElement {
         .justify_between()
         .border_t_1()
         .border_color(pal.border)
-        .child(accessibility_status(pal, granted))
+        .child({
+            #[cfg(target_os = "macos")]
+            let el = accessibility_status(pal, granted);
+            #[cfg(not(target_os = "macos"))]
+            let el = div().into_any_element();
+            let _ = granted;
+            el
+        })
         .child(
             div()
                 .text_xs()
@@ -1353,6 +1528,7 @@ fn footer(pal: Palette, granted: bool) -> impl IntoElement {
 /// Footer Accessibility-permission indicator. Granted → a muted green-dot
 /// status; not granted → an amber-dot affordance that requests the grant on
 /// click (the native prompt + System Settings, via [`open_accessibility_settings`]).
+#[cfg(target_os = "macos")]
 fn accessibility_status(pal: Palette, granted: bool) -> AnyElement {
     if granted {
         // Reassurance only — kept deliberately quiet: a small dimmed dot and
@@ -1413,8 +1589,8 @@ mod tests {
     }
 
     /// Tabs follow measured capabilities, not kind — the core of the #127 fix.
-    /// A device the registry mislabels (kind=Keyboard) but that exposes button +
-    /// pointer features still gets its Buttons/Pointer tabs and no lighting.
+    /// A device the Bolt register mislabels as Keyboard but whose 0x0005 probe
+    /// returns Mouse ends up with kind=Mouse; measured caps drive the tabs.
     #[test]
     fn tabs_follow_capabilities_not_kind() {
         let caps = Some(Capabilities {
@@ -1422,10 +1598,29 @@ mod tests {
             pointer: true,
             lighting: false,
         });
-        let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
+        // After 0x0005 kind-correction the record has kind=Mouse, not Keyboard.
+        let tabs = DetailTab::tabs_for(&record(DeviceKind::Mouse, caps));
         assert!(tabs.contains(&DetailTab::Buttons));
         assert!(tabs.contains(&DetailTab::Pointer));
         assert!(!tabs.contains(&DetailTab::Lighting));
+    }
+
+    /// A keyboard that exposes ReprogControls (buttons=true) but has no resolved
+    /// asset should not get the mouse-model Buttons panel — the generic mouse
+    /// hotspot layout (Middle Click, DPI Toggle, …) is wrong for a keyboard.
+    #[test]
+    fn keyboard_without_asset_hides_buttons_tab() {
+        let caps = Some(Capabilities {
+            buttons: true,
+            pointer: false,
+            lighting: true,
+        });
+        let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
+        assert!(
+            !tabs.contains(&DetailTab::Buttons),
+            "mouse model shown for keyboard"
+        );
+        assert!(tabs.contains(&DetailTab::Lighting));
     }
 
     /// Each panel is independent: a lighting-only device (e.g. a keyboard with

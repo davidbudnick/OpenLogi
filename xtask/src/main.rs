@@ -1,9 +1,11 @@
+mod linux;
 mod macos;
 mod manifest;
 mod util;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use linux::PackageLinux;
 use macos::DmgMacos;
 use manifest::GenerateUpdaterManifest;
 
@@ -26,6 +28,8 @@ enum Command {
     DmgMacos(DmgMacos),
     /// Build the app bundle and package it into the branded macOS DMG.
     PackageMacos(DmgMacos),
+    /// Build release binaries and package them into .deb and .rpm (Linux).
+    PackageLinux(PackageLinux),
 }
 
 fn main() -> Result<()> {
@@ -35,5 +39,6 @@ fn main() -> Result<()> {
         Command::BundleMacos => macos::bundle_macos(),
         Command::DmgMacos(args) => macos::dmg_macos(&args),
         Command::PackageMacos(args) => macos::package_macos(&args),
+        Command::PackageLinux(args) => linux::package_linux(&args),
     }
 }

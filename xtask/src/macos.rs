@@ -184,8 +184,20 @@ fn embed_agent_helper(root: &Path, app: &Path, xcode_env: &[(String, String)]) -
         .with_context(|| "could not copy the agent binary into the helper bundle".to_string())?;
     let info_src = root.join("crates/openlogi-agent/macos/Info.plist");
     ensure_file(&info_src)?;
-    fs::copy(&info_src, helper.join("Contents/Info.plist"))
+    let info_dst = helper.join("Contents/Info.plist");
+    fs::copy(&info_src, &info_dst)
         .with_context(|| "could not write the helper Info.plist".to_string())?;
+    // The template ships the 0.0.0 dev version (the hand-bundled dev flow
+    // copies it verbatim); stamp the workspace version (= xtask's own,
+    // inherited) over it so Finder and update scanners see the real one.
+    for key in ["CFBundleShortVersionString", "CFBundleVersion"] {
+        run(ProcessCommand::new("/usr/bin/plutil")
+            .arg("-replace")
+            .arg(key)
+            .arg("-string")
+            .arg(env!("CARGO_PKG_VERSION"))
+            .arg(&info_dst))?;
+    }
 
     println!("    embedded {}", helper.display());
     Ok(())
@@ -241,7 +253,11 @@ pub(crate) fn dmg_macos(args: &DmgMacos) -> Result<()> {
     // Geometry is locked to the painted 760×480 background. `create-dmg` uses
     // outer window dimensions, so add the 32pt Finder title bar and keep icon
     // coordinates relative to the 760×480 content area.
+    // ULMO (LZMA) compresses ~20% smaller than the default UDZO (zlib) and
+    // mounts on macOS 10.15+, well under the bundle's 13.0 floor.
     run(ProcessCommand::new("create-dmg")
+        .arg("--format")
+        .arg("ULMO")
         .arg("--volname")
         .arg("OpenLogi")
         .arg("--background")

@@ -16,13 +16,14 @@ use std::sync::{Arc, RwLock};
 
 use openlogi_core::config::Config;
 use openlogi_core::device::DeviceInventory;
-use openlogi_hid::{CaptureChannel, DIRECT_DEVICE_INDEX, DeviceRoute};
+use openlogi_hid::{CaptureChannel, DeviceRoute};
 use tracing::warn;
 
 use crate::DpiCycleState;
 use crate::bindings::{bindings_for, gesture_bindings_for, oshook_gestures_for};
 use crate::device_order::DeviceStableId;
 use crate::hook_runtime::{HookMaps, SharedHookMaps};
+use crate::ipc::InventoryHealth;
 use crate::watchers::gesture::GestureBindings;
 
 /// The minimal per-device facts the agent needs: the config key (binding /
@@ -68,9 +69,23 @@ pub struct Orchestrator {
     current_app: Option<String>,
     /// The latest inventory snapshot, kept so the IPC server can answer the
     /// GUI's `inventory()` polls without re-enumerating (the agent owns all
-    /// device I/O).
-    last_inventory: Vec<DeviceInventory>,
+    /// device I/O). The enum keeps "nothing checked yet" and "enumeration
+    /// broken" distinct from "checked and empty" — the IPC `status` reports
+    /// the distinction (as [`InventoryHealth`]) so the GUI can tell them
+    /// apart.
+    inventory: InventoryState,
     shared: SharedRuntime,
+}
+
+/// See [`Orchestrator::inventory`] (the field) — the agent-side superset of
+/// the wire-level [`InventoryHealth`], carrying the snapshot itself.
+enum InventoryState {
+    /// No enumeration has completed yet; the device set is unknown.
+    Pending,
+    /// The latest completed snapshot — empty means "checked, no devices".
+    Ready(Vec<DeviceInventory>),
+    /// Enumeration has never succeeded (broken HID backend / dead watcher).
+    Unavailable,
 }
 
 impl Orchestrator {
@@ -95,7 +110,7 @@ impl Orchestrator {
             devices: Vec::new(),
             current: 0,
             current_app: None,
-            last_inventory: Vec::new(),
+            inventory: InventoryState::Pending,
             shared,
         };
         orch.rebuild();
@@ -168,7 +183,10 @@ impl Orchestrator {
     /// index, so running it every 2s tick on an unchanged set would snap DPI
     /// back to `preset[0]` (and burn three `RwLock` writes) for nothing.
     pub fn refresh_inventory(&mut self, inventories: &[DeviceInventory]) {
-        self.last_inventory = inventories.to_vec();
+        // Even an empty snapshot is a *completed* enumeration — the watcher
+        // skips failed ticks — so the device set is now known either way (and
+        // a recovered backend upgrades `Unavailable` back to live data).
+        self.inventory = InventoryState::Ready(inventories.to_vec());
         let devices = build_devices(inventories);
         let changed = devices.len() != self.devices.len()
             || devices
@@ -202,10 +220,36 @@ impl Orchestrator {
         self.rebuild();
     }
 
-    /// The latest inventory snapshot (for the IPC `inventory()` poll).
+    /// The latest inventory snapshot (for the IPC `inventory()` poll). Empty
+    /// until the first enumeration completes — pair it with
+    /// [`Self::inventory_health`] to tell "unknown" from "none".
     #[must_use]
     pub fn inventory(&self) -> Vec<DeviceInventory> {
-        self.last_inventory.clone()
+        match &self.inventory {
+            InventoryState::Ready(inventories) => inventories.clone(),
+            InventoryState::Pending | InventoryState::Unavailable => Vec::new(),
+        }
+    }
+
+    /// Where enumeration stands, for the IPC `status` poll.
+    #[must_use]
+    pub fn inventory_health(&self) -> InventoryHealth {
+        match self.inventory {
+            InventoryState::Pending => InventoryHealth::Scanning,
+            InventoryState::Ready(_) => InventoryHealth::Ready,
+            InventoryState::Unavailable => InventoryHealth::Unavailable,
+        }
+    }
+
+    /// Record that enumeration has never worked and has stopped being treated
+    /// as "still starting" (persistent initial failure, or the watcher died).
+    /// Downgrades only [`InventoryState::Pending`]: once a snapshot exists the
+    /// last good device set stays authoritative — the same policy as the
+    /// watcher skipping failed mid-session ticks.
+    pub fn mark_inventory_unavailable(&mut self) {
+        if matches!(self.inventory, InventoryState::Pending) {
+            self.inventory = InventoryState::Unavailable;
+        }
     }
 
     /// Whether autostart is enabled in the current config (for IPC `status`).
@@ -252,7 +296,7 @@ fn build_devices(inventories: &[DeviceInventory]) -> Vec<AgentDevice> {
             };
             devices.push(AgentDevice {
                 config_key: model.config_key(),
-                route: device_route(inv, paired.slot),
+                route: DeviceRoute::device_route_for(inv, paired.slot),
                 slot: paired.slot,
                 serial: model.serial_number.clone(),
                 unit_id: model.unit_id,
@@ -286,25 +330,6 @@ fn pick_current(devices: &[AgentDevice], saved: Option<&str>) -> usize {
         .unwrap_or(0)
 }
 
-/// Build the [`DeviceRoute`] HID++ writes use to reach a device. A Bolt-paired
-/// device routes through its receiver UID + slot; a directly attached one
-/// (USB / Bluetooth) carries no receiver UID and sits at [`DIRECT_DEVICE_INDEX`],
-/// routing by vendor/product id. A Bolt device whose receiver UID is unknown
-/// gets no route, so writes are skipped rather than mis-routed.
-fn device_route(inv: &DeviceInventory, slot: u8) -> Option<DeviceRoute> {
-    match &inv.receiver.unique_id {
-        Some(receiver_uid) => Some(DeviceRoute::Bolt {
-            receiver_uid: receiver_uid.clone(),
-            slot,
-        }),
-        None if slot == DIRECT_DEVICE_INDEX => Some(DeviceRoute::Direct {
-            vendor_id: inv.receiver.vendor_id,
-            product_id: inv.receiver.product_id,
-        }),
-        None => None,
-    }
-}
-
 /// Replace the value behind an `RwLock`, logging (not panicking) on poison so a
 /// background thread that paniced while holding the lock can't take the agent
 /// down — it just keeps the stale value until the next successful rebuild.
@@ -312,5 +337,38 @@ fn write_value<T>(lock: &RwLock<T>, value: T, name: &str) {
     match lock.write() {
         Ok(mut guard) => *guard = value,
         Err(e) => warn!(error = %e, lock = name, "lock poisoned — keeping stale value"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InventoryHealth, Orchestrator};
+    use openlogi_core::config::Config;
+
+    /// An *empty* snapshot still flips the health to `Ready`: the watcher only
+    /// forwards completed enumerations, so "checked and found nothing" must not
+    /// be reported as "still scanning" — that's the whole distinction the
+    /// health exists to carry.
+    #[test]
+    fn empty_refresh_marks_inventory_ready() {
+        let mut orch = Orchestrator::new(Config::default());
+        assert_eq!(orch.inventory_health(), InventoryHealth::Scanning);
+        orch.refresh_inventory(&[]);
+        assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
+    }
+
+    /// `Unavailable` is a startup-only downgrade: it reports "enumeration has
+    /// never worked", recovers when a snapshot finally lands, and never
+    /// clobbers a live device set on a mid-session failure (mirroring the
+    /// watcher's keep-last-snapshot policy).
+    #[test]
+    fn unavailable_only_downgrades_a_pending_inventory() {
+        let mut orch = Orchestrator::new(Config::default());
+        orch.mark_inventory_unavailable();
+        assert_eq!(orch.inventory_health(), InventoryHealth::Unavailable);
+        orch.refresh_inventory(&[]);
+        assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
+        orch.mark_inventory_unavailable();
+        assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
     }
 }

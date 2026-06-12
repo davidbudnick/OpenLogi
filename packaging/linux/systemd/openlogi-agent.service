@@ -1,0 +1,24 @@
+# OpenLogi background agent — packaged user unit.
+#
+# This file is a template — @BINDIR@ is substituted at install time:
+#   - nfpm (.deb/.rpm): postinstall.sh expands it to /usr/bin
+#   - install.sh: expanded to PREFIX/bin (default /usr/local/bin)
+# The agent's launch_at_login setting writes its own copy to
+# $XDG_CONFIG_HOME/systemd/user/ using the current binary path — both coexist,
+# enabling either works.
+#
+# Enable for the current user:
+#   systemctl --user enable --now openlogi-agent.service
+
+[Unit]
+Description=OpenLogi background agent (Logitech HID++ device control)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/openlogi-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
