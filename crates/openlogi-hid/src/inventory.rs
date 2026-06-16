@@ -745,7 +745,19 @@ async fn probe_direct(
     // would be indistinguishable from a transient glitch, so the node is
     // settled as a failed probe and its last inventory replayed.
     let walk_succeeded = probe.capabilities.is_some();
-    let caps = probe.capabilities.unwrap_or_default();
+    // When the full feature-table walk completed, trust its capabilities. When
+    // it didn't (a wired mouse whose `FeatureSet` walk timed out — e.g. the
+    // G502 HERO over USB), fall back to a cheap per-feature root probe: each
+    // `root.getFeature` is a single round-trip that answers even when the table
+    // walk fails, so the device proves it is a real peripheral instead of being
+    // misread as a receiver secondary interface and dropped from the list.
+    let fallback_caps = if probe.capabilities.is_none() {
+        peripheral_caps_via_root(&channel, DIRECT_DEVICE_INDEX).await
+    } else {
+        None
+    };
+    let effective_caps = probe.capabilities.or(fallback_caps);
+    let caps = effective_caps.unwrap_or_default();
     let is_peripheral = probe.battery.is_some() || caps.buttons || caps.pointer || caps.lighting;
     if !is_peripheral {
         debug!(
@@ -786,7 +798,7 @@ async fn probe_direct(
             online: true,
             battery: probe.battery,
             model_info: probe.model_info,
-            capabilities: probe.capabilities,
+            capabilities: effective_caps,
         }],
     };
     NodeProbe {
@@ -963,6 +975,33 @@ fn battery_feature_index(ids: impl IntoIterator<Item = u16>) -> Option<u8> {
         // A feature table holds at most `u8::MAX` entries (its count is a u8),
         // so the 1-based index always fits.
         .and_then(|pos| u8::try_from(pos + 1).ok())
+}
+
+/// Driving feature IDs that mark a direct device as a real configurable
+/// peripheral (reprogrammable controls, adjustable DPI, per-key lighting)
+/// rather than a receiver's secondary HID interface. Mirrors the families
+/// [`Capabilities::from_feature_ids`] keys on.
+const PERIPHERAL_FEATURE_IDS: [u16; 8] = [
+    0x1b00, 0x1b01, 0x1b02, 0x1b03, 0x1b04, 0x2201, 0x2202, 0x8080,
+];
+
+/// Cheap capability probe via the device root, for when the full `FeatureSet`
+/// walk (see [`probe_features`]) doesn't complete. Each `root.getFeature` is a
+/// single round-trip that answers even when the table walk fails, so a wired
+/// mouse whose walk times out still proves it is a peripheral instead of
+/// vanishing. `None` when the device can't be opened or announces none of these
+/// features. Only reached on the direct path's walk-failed fallback.
+async fn peripheral_caps_via_root(channel: &Arc<HidppChannel>, index: u8) -> Option<Capabilities> {
+    let device = Device::new(Arc::clone(channel), index).await.ok()?;
+    let root = device.root();
+    let mut present = Vec::new();
+    for id in PERIPHERAL_FEATURE_IDS {
+        if let Ok(Some(_)) = root.get_feature(id).await {
+            present.push(id);
+        }
+    }
+    let caps = Capabilities::from_feature_ids(&present);
+    (caps != Capabilities::default()).then_some(caps)
 }
 
 /// Open a HID++ session for `slot` and read everything we care about (battery,
