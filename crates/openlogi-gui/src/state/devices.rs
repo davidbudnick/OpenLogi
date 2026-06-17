@@ -1,11 +1,8 @@
 //! Device-list construction and selection helpers for [`super::AppState`].
 
-use std::collections::HashSet;
-
 use openlogi_agent_core::device_order::DeviceStableId;
-use openlogi_core::config::{Config, DeviceIdentity};
 use openlogi_core::device::{
-    BatteryInfo, Capabilities, DeviceInventory, DeviceKind, DeviceModelInfo, DeviceTransports,
+    BatteryInfo, Capabilities, DeviceInventory, DeviceKind, DeviceModelInfo,
 };
 use openlogi_hid::DeviceRoute;
 use tracing::debug;
@@ -47,21 +44,15 @@ pub struct DeviceRecord {
     pub battery: Option<BatteryInfo>,
 }
 
-/// Build the carousel's device list as the **union** of the live inventory and
-/// the persisted set of devices we've seen before.
+/// Build the carousel's device list from the live inventory.
 ///
-/// Live devices come from `inventories` (the agent's current HID++ probe).
-/// Every device the user has previously seen online but that is *absent* from
-/// this snapshot — asleep, or not yet re-probed after a cold start — is added
-/// back as an offline placeholder from [`Config::known_identities`]. This is
-/// what makes the list independent of whether a probe wins its timing race: a
-/// known device (with its Pointer/Buttons panels) is always shown, and the live
-/// probe only *enriches* it (online state, battery, asset photo) rather than
-/// *gating* whether it appears at all. See issue #159.
+/// The list is exactly the devices the agent's current HID++ probe reports, so
+/// a device fully disconnected from the machine drops out of the carousel
+/// instead of lingering as a shadow card (#280). Transient probe misses are
+/// smoothed over by [`super::AppState::merge_inventory_snapshot`], not here.
 pub(super) fn build_device_list(
     inventories: &[DeviceInventory],
     cache: &AssetResolver,
-    config: &Config,
 ) -> Vec<DeviceRecord> {
     let mut list = Vec::new();
     for inv in inventories {
@@ -125,96 +116,8 @@ pub(super) fn build_device_list(
     if std::env::var_os("OPENLOGI_DEMO_KEYBOARD").is_some() {
         list.push(demo_keyboard());
     }
-    append_offline_known(&mut list, config.known_identities(), cache);
     sort_device_list(&mut list);
     list
-}
-
-/// Append an offline placeholder for every known device not already present in
-/// `list` (matched by `config_key`). Split out from [`build_device_list`] so
-/// the union rule is unit-testable without an [`AssetResolver`].
-fn append_offline_known<'a>(
-    list: &mut Vec<DeviceRecord>,
-    known: impl Iterator<Item = (&'a str, &'a DeviceIdentity)>,
-    cache: &AssetResolver,
-) {
-    let mut blocked_keys: HashSet<String> = list
-        .iter()
-        .flat_map(|r| [r.config_key.clone(), r.model_key.clone()])
-        .collect();
-    let mut known = known.collect::<Vec<_>>();
-    known.sort_by_key(|(key, identity)| (identity.model_info.is_none(), (*key).to_string()));
-
-    for (key, identity) in known {
-        let model_key = identity
-            .model_info
-            .as_ref()
-            .map_or_else(|| key.to_string(), DeviceModelInfo::config_key);
-        if blocked_keys.contains(key) || blocked_keys.contains(&model_key) {
-            continue;
-        }
-        let record = offline_record(key, identity, cache);
-        blocked_keys.insert(record.config_key.clone());
-        blocked_keys.insert(record.model_key.clone());
-        list.push(record);
-    }
-}
-
-/// Synthesize an offline placeholder from a persisted [`DeviceIdentity`].
-///
-/// `route: None` keeps every hardware write a no-op until the live inventory
-/// supplies the real route when the device wakes; `capabilities: Some(..)` from
-/// the persisted measurement is what keeps the device's config panels visible
-/// while it sleeps. When the identity was written by a version that persisted
-/// model info, the cached asset is resolved immediately so cold-start cards do
-/// not flash the synthetic silhouette while waiting for live inventory.
-fn offline_record(
-    config_key: &str,
-    identity: &DeviceIdentity,
-    cache: &AssetResolver,
-) -> DeviceRecord {
-    let model_info = identity
-        .model_info
-        .clone()
-        .or_else(|| model_info_from_legacy_model_key(config_key));
-    let asset = model_info
-        .as_ref()
-        .and_then(|model| cache.resolve(model, identity.codename.as_deref()));
-    let model_key = model_info
-        .as_ref()
-        .map_or_else(|| config_key.to_string(), DeviceModelInfo::config_key);
-    DeviceRecord {
-        config_key: config_key.to_string(),
-        model_key,
-        display_name: identity.display_name.clone(),
-        asset,
-        model_info,
-        codename: identity.codename.clone(),
-        serial_number: None,
-        unit_id: [0; 4],
-        route: None,
-        kind: identity.kind,
-        capabilities: Some(identity.capabilities),
-        slot: 0,
-        online: false,
-        battery: None,
-    }
-}
-
-fn model_info_from_legacy_model_key(key: &str) -> Option<DeviceModelInfo> {
-    if key.len() <= 4 || !key.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    let split = key.len() - 4;
-    let (ext, pid) = key.split_at(split);
-    Some(DeviceModelInfo {
-        entity_count: 0,
-        serial_number: None,
-        unit_id: [0; 4],
-        transports: DeviceTransports::default(),
-        model_ids: [u16::from_str_radix(pid, 16).ok()?, 0, 0],
-        extended_model_id: u8::from_str_radix(ext, 16).ok()?,
-    })
 }
 
 /// Order the carousel by physical route. HID enumeration order can change as
@@ -333,15 +236,11 @@ fn prettify_codename(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use openlogi_core::config::Config;
     use openlogi_core::device::{DeviceInventory, PairedDevice, ReceiverInfo};
 
     use crate::asset::AssetResolver;
 
-    use super::{
-        Capabilities, DeviceIdentity, DeviceKind, DeviceRecord, append_offline_known,
-        build_device_list, effective_kind, offline_record,
-    };
+    use super::{DeviceKind, build_device_list, effective_kind};
 
     fn paired_device_no_model_info(slot: u8, wpid: Option<u16>) -> PairedDevice {
         PairedDevice {
@@ -368,45 +267,11 @@ mod tests {
         }
     }
 
-    fn online_record(key: &str) -> DeviceRecord {
-        DeviceRecord {
-            config_key: key.to_string(),
-            model_key: key.to_string(),
-            display_name: format!("live {key}"),
-            asset: None,
-            model_info: None,
-            codename: None,
-            serial_number: None,
-            unit_id: [1; 4],
-            route: None,
-            kind: DeviceKind::Mouse,
-            capabilities: Some(Capabilities::presumed_from_kind(DeviceKind::Mouse)),
-            slot: 1,
-            online: true,
-            battery: None,
-        }
-    }
-
-    fn mouse_identity(name: &str) -> DeviceIdentity {
-        DeviceIdentity {
-            display_name: name.to_string(),
-            kind: DeviceKind::Mouse,
-            capabilities: Capabilities {
-                buttons: true,
-                pointer: true,
-                lighting: false,
-                scroll_inversion: false,
-            },
-            model_info: None,
-            codename: None,
-        }
-    }
-
     #[test]
     fn no_model_info_uses_receiver_slot_as_config_key() {
         let inv = inventory_with(vec![paired_device_no_model_info(1, Some(0x4076))]);
         let cache = AssetResolver::new();
-        let list = build_device_list(&[inv], &cache, &Config::default());
+        let list = build_device_list(&[inv], &cache);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].config_key, "receiver:da2699e1:slot:1");
         assert_eq!(list[0].model_key, "wpid4076");
@@ -418,7 +283,7 @@ mod tests {
     fn no_model_info_falls_back_to_slot_when_no_wpid() {
         let inv = inventory_with(vec![paired_device_no_model_info(3, None)]);
         let cache = AssetResolver::new();
-        let list = build_device_list(&[inv], &cache, &Config::default());
+        let list = build_device_list(&[inv], &cache);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].config_key, "receiver:da2699e1:slot:3");
         assert_eq!(list[0].model_key, "slot3");
@@ -428,45 +293,8 @@ mod tests {
     fn no_model_info_display_name_falls_back_to_slot() {
         let inv = inventory_with(vec![paired_device_no_model_info(2, Some(0x4051))]);
         let cache = AssetResolver::new();
-        let list = build_device_list(&[inv], &cache, &Config::default());
+        let list = build_device_list(&[inv], &cache);
         assert_eq!(list[0].display_name, "Slot 2");
-    }
-
-    #[test]
-    fn offline_record_is_present_but_inert() {
-        // A persisted identity renders as an offline card that still carries its
-        // measured capabilities (so its panels show) but no route (so writes are
-        // no-ops until it wakes).
-        let id = mouse_identity("MX Master 3S");
-        let cache = AssetResolver::new();
-        let rec = offline_record("2b034", &id, &cache);
-        assert_eq!(rec.config_key, "2b034");
-        assert_eq!(rec.display_name, "MX Master 3S");
-        assert!(!rec.online);
-        assert!(rec.route.is_none());
-        assert_eq!(rec.capabilities, Some(id.capabilities));
-    }
-
-    #[test]
-    fn known_devices_are_appended_only_when_absent_from_live() {
-        // "A" is live; "B" is known-but-asleep. The union keeps the live "A"
-        // untouched and adds "B" back as an offline placeholder — the core of
-        // the #159 fix: a sleeping device never drops out of the list.
-        let mut list = vec![online_record("A")];
-        let a = mouse_identity("live A overwritten?");
-        let b = mouse_identity("asleep B");
-        let cache = AssetResolver::new();
-        append_offline_known(&mut list, [("A", &a), ("B", &b)].into_iter(), &cache);
-
-        assert_eq!(list.len(), 2);
-        assert!(
-            list.iter().any(|r| r.config_key == "A" && r.online),
-            "the live record for A must win over its identity"
-        );
-        assert!(
-            list.iter().any(|r| r.config_key == "B" && !r.online),
-            "B is added back as a persisted offline placeholder"
-        );
     }
 
     #[test]
