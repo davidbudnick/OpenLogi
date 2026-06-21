@@ -1,9 +1,11 @@
 use std::env;
-use std::fs;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
+use icns::{IconFamily, IconType, Image as IcnsImage, PixelFormat};
+use image::imageops::FilterType;
 use xshell::{Shell, cmd};
 
 use crate::util::{absolutize, command_exists, ensure_command, ensure_dir, ensure_file, repo_root};
@@ -40,54 +42,47 @@ pub(crate) fn package_macos(args: &DmgMacos) -> Result<()> {
 
 pub(crate) fn generate_macos_icns() -> Result<()> {
     let root = repo_root()?;
-    let sh = Shell::new()?;
     let master = root.join("design/icon/openlogi.png");
     let output_dir = root.join("crates/openlogi-gui/icon");
     let output = output_dir.join("AppIcon.icns");
 
     ensure_file(&master)?;
-    fs::create_dir_all(&output_dir).with_context(|| {
+    fs_err::create_dir_all(&output_dir).with_context(|| {
         format!(
             "could not create icon output directory {}",
             output_dir.display()
         )
     })?;
-
-    let work = tempfile::Builder::new()
-        .prefix("openlogi-icns-")
-        .tempdir()
-        .context("could not create temporary iconset directory")?;
-    let iconset = work.path().join("AppIcon.iconset");
-    fs::create_dir_all(&iconset)
-        .with_context(|| format!("could not create iconset directory {}", iconset.display()))?;
-
-    // The squircle and opaque fill are baked into the 1024² master PNG, so each
-    // iconset slot is just a sips downscale. sips and iconutil are macOS
-    // built-ins — no SVG renderer (rsvg/resvg) needed.
-    render_iconset(&iconset, |size, output| {
-        let size = size.to_string();
-        cmd!(sh, "sips -z {size} {size} {master} --out {output}")
-            .ignore_stdout()
-            .run()?;
-        Ok(())
-    })?;
-
-    cmd!(sh, "iconutil -c icns {iconset} -o {output}").run()?;
+    write_icns(&master, &output)?;
     println!("wrote {}", output.display());
     Ok(())
 }
 
-fn render_iconset<F>(iconset: &Path, mut render: F) -> Result<()>
-where
-    F: FnMut(u16, &Path) -> Result<()>,
-{
-    for size in [16, 32, 128, 256, 512] {
-        render(size, &iconset.join(format!("icon_{size}x{size}.png")))?;
-        render(
-            size * 2,
-            &iconset.join(format!("icon_{size}x{size}@2x.png")),
-        )?;
+fn write_icns(master: &Path, output: &Path) -> Result<()> {
+    let master = image::open(master)
+        .with_context(|| format!("could not read app icon master {}", master.display()))?;
+    let mut family = IconFamily::new();
+    for (size, icon_type) in [
+        (16, IconType::RGBA32_16x16),
+        (32, IconType::RGBA32_16x16_2x),
+        (32, IconType::RGBA32_32x32),
+        (64, IconType::RGBA32_32x32_2x),
+        (128, IconType::RGBA32_128x128),
+        (256, IconType::RGBA32_128x128_2x),
+        (256, IconType::RGBA32_256x256),
+        (512, IconType::RGBA32_256x256_2x),
+        (512, IconType::RGBA32_512x512),
+        (1024, IconType::RGBA32_512x512_2x),
+    ] {
+        let rgba = master
+            .resize_exact(size, size, FilterType::Lanczos3)
+            .to_rgba8();
+        let icon = IcnsImage::from_data(PixelFormat::RGBA, size, size, rgba.into_raw())?;
+        family.add_icon_with_type(&icon, icon_type)?;
     }
+    let file = fs_err::File::create(output)
+        .with_context(|| format!("could not create app icon {}", output.display()))?;
+    family.write(BufWriter::new(file))?;
     Ok(())
 }
 
@@ -109,10 +104,10 @@ pub(crate) fn bundle_macos() -> Result<()> {
         println!("==> device assets: on-demand (not bundled; fetched at first launch)");
         let assets = root.join("crates/openlogi-gui/assets");
         if assets.exists() {
-            fs::remove_dir_all(&assets)
+            fs_err::remove_dir_all(&assets)
                 .with_context(|| format!("could not remove {}", assets.display()))?;
         }
-        fs::create_dir_all(&assets)
+        fs_err::create_dir_all(&assets)
             .with_context(|| format!("could not create {}", assets.display()))?;
     }
 
@@ -157,14 +152,14 @@ fn embed_agent_helper(root: &Path, app: &Path, xcode_env: &[(String, String)]) -
 
     let helper = app.join("Contents/Library/LoginItems/OpenLogiAgent.app");
     let helper_macos = helper.join("Contents/MacOS");
-    fs::create_dir_all(&helper_macos)
+    fs_err::create_dir_all(&helper_macos)
         .with_context(|| format!("could not create {}", helper_macos.display()))?;
-    fs::copy(&agent_bin, helper_macos.join("openlogi-agent"))
+    fs_err::copy(&agent_bin, helper_macos.join("openlogi-agent"))
         .with_context(|| "could not copy the agent binary into the helper bundle".to_string())?;
     let info_src = root.join("crates/openlogi-agent/macos/Info.plist");
     ensure_file(&info_src)?;
     let info_dst = helper.join("Contents/Info.plist");
-    fs::copy(&info_src, &info_dst)
+    fs_err::copy(&info_src, &info_dst)
         .with_context(|| "could not write the helper Info.plist".to_string())?;
     // Share the GUI's app icon so the agent shows the OpenLogi mark (not a
     // generic blank) in System Settings → Accessibility, where the grant now
@@ -174,9 +169,9 @@ fn embed_agent_helper(root: &Path, app: &Path, xcode_env: &[(String, String)]) -
     let icon_src = root.join("crates/openlogi-gui/icon/AppIcon.icns");
     ensure_file(&icon_src)?;
     let resources = helper.join("Contents/Resources");
-    fs::create_dir_all(&resources)
+    fs_err::create_dir_all(&resources)
         .with_context(|| format!("could not create {}", resources.display()))?;
-    fs::copy(&icon_src, resources.join("AppIcon.icns"))
+    fs_err::copy(&icon_src, resources.join("AppIcon.icns"))
         .with_context(|| "could not copy the app icon into the helper bundle".to_string())?;
     // The template ships the 0.0.0 dev version (the hand-bundled dev flow
     // copies it verbatim); stamp the workspace version (= xtask's own,
@@ -219,7 +214,7 @@ pub(crate) fn dmg_macos(args: &DmgMacos) -> Result<()> {
     println!("==> dmg background");
     let background = root.join("target/release/dmg-background.tiff");
     if let Some(parent) = background.parent() {
-        fs::create_dir_all(parent)
+        fs_err::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
     let background_url = &args.background_url;
@@ -234,7 +229,7 @@ pub(crate) fn dmg_macos(args: &DmgMacos) -> Result<()> {
 
     println!("==> dmg");
     if output.exists() {
-        fs::remove_file(&output)
+        fs_err::remove_file(&output)
             .with_context(|| format!("could not remove {}", output.display()))?;
     }
 

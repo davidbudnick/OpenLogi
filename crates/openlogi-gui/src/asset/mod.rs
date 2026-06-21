@@ -96,7 +96,7 @@ pub fn reveal_cache_in_file_manager() {
 /// above isn't the function's last statement on non-macOS — `needless_return`.)
 #[cfg(target_os = "macos")]
 fn open_in_file_manager(path: &Path) {
-    if let Err(e) = std::process::Command::new("open").arg(path).spawn() {
+    if let Err(e) = opener::open(path) {
         warn!(error = %e, "could not open cache dir in Finder");
     }
 }

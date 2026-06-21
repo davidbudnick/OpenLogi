@@ -15,6 +15,13 @@ This file tracks places where OpenLogi carries general-purpose infrastructure co
 - [x] Replace recursive asset-cache directory walking with `walkdir`.
 - [x] Replace `xtask` command orchestration with `xshell`.
 - [x] Replace stale-agent process discovery/signalling through `pgrep`/`kill` with `sysinfo`.
+- [x] Replace `xtask` file/path helpers with `fs-err` and `path-absolutize`.
+- [x] Replace remaining `xtask` production file operations with `fs-err`.
+- [x] Replace `xtask`'s hand-written SHA-256 file loop with `sha2_hasher`.
+- [x] Replace `xtask` manifest tests' custom temp directory with `tempfile`.
+- [x] Replace macOS iconset shell-out (`sips` + `iconutil`) with `image` + `icns`.
+- [x] Replace GUI asset-sync retry delay math with `backon`'s exponential backoff.
+- [x] Replace generic GUI/agent `open` shell-outs with `opener`.
 
 ## Needs behavior tests before replacing
 
@@ -24,6 +31,10 @@ This file tracks places where OpenLogi carries general-purpose infrastructure co
 ## Keep custom for now
 
 - `openlogi-core::single_instance`: `single-instance` uses different backends (for example abstract Unix sockets on Linux) and does not preserve OpenLogi's data-dir lock-file path, per-role names, and error classification closely enough to be a safe deletion.
+- Agent tray Quit's `openlogi://quit` dispatch keeps `std::process::Command::output()` intentionally: it blocks until LaunchServices accepts the Apple Event, while generic opener crates only guarantee process spawn.
+- GUI helper launch keeps `/usr/bin/open -g -n` intentionally: it needs LaunchServices-specific flags to start the packaged agent under its own TCC identity, which generic opener crates do not expose.
+- Agent autostart install keeps direct `systemctl` calls because it is managing systemd user units, not merely opening or spawning an arbitrary program.
+- Self-restart and `disclaim` launches stay custom because they are process identity / update lifecycle boundaries, not generic command orchestration.
 - `openlogi-hook`: event suppression/rewriting and foreground-app lookup are OpenLogi-specific and not covered cleanly by generic input crates.
 - `openlogi-inject`: platform-specific action synthesis may overlap with `enigo`, but current semantics are narrower and more controlled.
 - `openlogi-hid` / vendored `openlogi-hidpp`: the right path is upstreaming OpenLogi-specific fixes, not replacing the fork blindly.

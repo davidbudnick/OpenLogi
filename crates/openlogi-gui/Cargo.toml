@@ -45,6 +45,8 @@ disclaim = "0.1"
 url = "2.5.8"
 walkdir = "2.5.0"
 fluent-langneg = "0.14.2"
+backon.workspace = true
+opener = "0.8.5"
 
 # Menu-bar (NSStatusItem) FFI — GPUI has no status-bar API. objc2 gives typed,
 # `Retained<T>`-owned AppKit bindings so the status-item code can't leak (#99).

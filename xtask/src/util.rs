@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
+use path_absolutize::Absolutize;
 
 pub(crate) fn repo_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,7 +23,8 @@ pub(crate) fn ensure_command(name: &str) -> Result<()> {
 }
 
 pub(crate) fn ensure_file(path: &Path) -> Result<()> {
-    if path.is_file() {
+    let metadata = fs_err::metadata(path)?;
+    if metadata.is_file() {
         Ok(())
     } else {
         bail!("missing file {}", path.display())
@@ -30,7 +32,8 @@ pub(crate) fn ensure_file(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
-    if path.is_dir() {
+    let metadata = fs_err::metadata(path)?;
+    if metadata.is_dir() {
         Ok(())
     } else {
         bail!("missing directory {}", path.display())
@@ -38,9 +41,6 @@ pub(crate) fn ensure_dir(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn absolutize(root: &Path, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root.join(path)
-    }
+    path.absolutize_from(root)
+        .map_or_else(|_| root.join(path), std::borrow::Cow::into_owned)
 }
