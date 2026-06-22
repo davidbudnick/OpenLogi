@@ -2,9 +2,8 @@
 //! path.
 //!
 //! Per-device state (button bindings, …) lives under the
-//! [`Config::devices`] map, keyed by the HID++ identifier returned by
-//! [`DeviceModelInfo::config_key`](crate::device::DeviceModelInfo::config_key)
-//! — e.g. `"2b042"` for an MX Master 4. Schema migrations branch on
+//! [`Config::devices`] map, keyed by a stable physical-device identifier such
+//! as `"receiver:abc123:slot:2"`. Schema migrations branch on
 //! [`Config::schema_version`].
 
 use std::{
@@ -24,12 +23,16 @@ use crate::paths::{self, PathsError};
 /// changes; readers branch on the parsed value before consuming the rest of
 /// the file.
 ///
+/// v3 changes the device map from model keys to physical-device keys. No v2
+/// device entries are migrated because model-scoped settings cannot be assigned
+/// safely when two identical devices exist.
+///
 /// v2 merged the per-device `button_bindings` + `gesture_bindings` maps into a
 /// single `bindings: BTreeMap<ButtonId, Binding>`. A v1 file still loads (the
 /// `RawDeviceConfig` shim folds the legacy fields) and self-heals to v2 on the
 /// next save; [`Config::load_from_path`] rejects only versions *newer* than this
 /// so a forward file fails loudly instead of silently losing bindings.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Top-level config document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +41,7 @@ pub struct Config {
     /// Non-device-scoped preferences (autostart, tray, language, …).
     #[serde(default, skip_serializing_if = "AppSettings::is_default")]
     pub app_settings: AppSettings,
-    /// HID++ `config_key` of the carousel-selected device, persisted so a
+    /// Physical config key of the carousel-selected device, persisted so a
     /// restart restores the last view rather than always landing on the
     /// first paired device. `None` means "fall back to the first device".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,7 +327,7 @@ pub struct DeviceIdentity {
     pub capabilities: Capabilities,
 }
 
-/// Settings scoped to a single physical device (keyed by HID++ model+ext).
+/// Settings scoped to a single physical device.
 ///
 /// Deserialization goes through `RawDeviceConfig` (`#[serde(from)]`) so
 /// pre-v2 files — which split bindings across `button_bindings` +
@@ -382,8 +385,8 @@ pub struct DeviceConfig {
     /// Invert this device's scroll-wheel direction relative to the OS setting
     /// (issue #126): on, a wheel tick scrolls the opposite way, so a user who
     /// keeps macOS "natural scrolling" for the trackpad can have a traditional
-    /// "reverse" wheel on the mouse. Vertical only; the agent applies it in the
-    /// OS hook and leaves continuous trackpad scrolling untouched. `false`
+    /// "reverse" wheel on the mouse. Vertical only; the agent applies it through
+    /// the device's HID++ native wheel-inversion mode when supported. `false`
     /// (default) is the native direction, and is omitted from `config.toml`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub invert_scroll: bool,
@@ -1092,10 +1095,10 @@ mod tests {
         );
         let body = toml::to_string_pretty(&cfg).expect("serialize");
 
-        // The model id only contains [A-Za-z0-9_], so TOML emits it as a
-        // bare-word table key (no surrounding quotes). The test asserts the
-        // observable structure rather than locking in a specific quoting.
-        assert!(body.contains("schema_version = 2"), "got: {body}");
+        // The key only contains [A-Za-z0-9_], so TOML emits it as a bare-word
+        // table key (no surrounding quotes). The test asserts the observable
+        // structure rather than locking in a specific quoting.
+        assert!(body.contains("schema_version = 3"), "got: {body}");
         assert!(body.contains("[devices.2b042.bindings]"), "got: {body}");
         // A `Single` binding serializes byte-identically to the pre-v2 bare
         // `Action`, so the leaf line is unchanged.
@@ -1323,10 +1326,10 @@ Click = \"Paste\"
             Some(&Binding::Gesture(gesture))
         );
 
-        // Saving self-heals to the v2 shape: stamped version + merged table,
+        // Saving self-heals to the current shape: stamped version + merged table,
         // legacy field names gone.
         let body = toml::to_string_pretty(&cfg).expect("serialize");
-        assert!(body.contains("schema_version = 2"), "got: {body}");
+        assert!(body.contains("schema_version = 3"), "got: {body}");
         assert!(body.contains("[devices.2b042.bindings]"), "got: {body}");
         assert!(!body.contains("button_bindings"), "got: {body}");
         assert!(!body.contains("gesture_bindings"), "got: {body}");

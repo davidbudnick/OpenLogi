@@ -1635,6 +1635,7 @@ mod tests {
     fn record(kind: DeviceKind, capabilities: Option<Capabilities>) -> DeviceRecord {
         DeviceRecord {
             config_key: "test".to_string(),
+            model_key: "test".to_string(),
             display_name: "Test".to_string(),
             asset: None,
             model_info: None,

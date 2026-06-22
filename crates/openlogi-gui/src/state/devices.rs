@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use openlogi_agent_core::device_order::DeviceStableId;
 use openlogi_core::config::{Config, DeviceIdentity};
 use openlogi_core::device::{
-    BatteryInfo, Capabilities, DeviceInventory, DeviceKind, DeviceModelInfo, DeviceTransports,
+    BatteryInfo, Capabilities, DeviceInventory, DeviceKind, DeviceModelInfo,
 };
 use openlogi_hid::DeviceRoute;
 use tracing::debug;
@@ -13,7 +13,7 @@ use tracing::debug;
 use crate::asset::{AssetResolver, ResolvedAsset};
 
 /// One paired device with everything the UI needs to switch to it in O(1):
-/// the config key (for bindings/DPI persistence), a display name, the
+/// the physical config key (for bindings/DPI persistence), a display name, the
 /// resolved asset (PNG + metadata, or `None` for the synthetic fallback),
 /// and the [`DeviceRoute`] HID++ writes / capture target.
 ///
@@ -24,7 +24,10 @@ use crate::asset::{AssetResolver, ResolvedAsset};
 /// with [`super::AppState::current_device`].
 #[derive(Debug, Clone)]
 pub struct DeviceRecord {
+    /// Stable physical-device key used for persisted settings.
     pub config_key: String,
+    /// Stable model key used only for asset/model lookup and diagnostics.
+    pub model_key: String,
     pub display_name: String,
     pub asset: Option<ResolvedAsset>,
     pub model_info: Option<DeviceModelInfo>,
@@ -63,7 +66,8 @@ pub(super) fn build_device_list(
     let mut list = Vec::new();
     for inv in inventories {
         for paired in &inv.paired {
-            let (config_key, asset, model_info, codename, serial_number, unit_id) =
+            let route = DeviceRoute::device_route_for(inv, paired.slot);
+            let (model_key, asset, model_info, codename, serial_number, unit_id) =
                 if let Some(model) = paired.model_info.as_ref() {
                     let asset = cache.resolve(model, paired.codename.as_deref());
                     (
@@ -77,14 +81,21 @@ pub(super) fn build_device_list(
                 } else {
                     // No HID++ 2.0 model info — HID++ 1.0 device or feature walk
                     // timed out. Surface the device anyway using the wpid (or slot
-                    // as a last resort) as a stable config key so it appears in the
-                    // carousel and its settings survive across sessions.
+                    // as a last-resort model key) so it appears in the carousel
+                    // with a stable display fallback.
                     let key = paired.wpid.map_or_else(
                         || format!("slot{}", paired.slot),
                         |w| format!("wpid{w:04x}"),
                     );
                     (key, None, None, paired.codename.clone(), None, [0u8; 4])
                 };
+            let config_key = DeviceStableId::from_parts(
+                route.as_ref(),
+                paired.slot,
+                serial_number.as_deref(),
+                unit_id,
+            )
+            .config_key();
 
             let display_name = asset
                 .as_ref()
@@ -94,13 +105,14 @@ pub(super) fn build_device_list(
             let kind = effective_kind(paired.kind, asset.as_ref().map(|a| a.kind));
             list.push(DeviceRecord {
                 config_key,
+                model_key,
                 display_name,
                 asset,
                 model_info,
                 codename,
                 serial_number,
                 unit_id,
-                route: DeviceRoute::device_route_for(inv, paired.slot),
+                route,
                 kind,
                 capabilities: paired.capabilities,
                 slot: paired.slot,
@@ -150,15 +162,16 @@ fn offline_record(
     identity: &DeviceIdentity,
     cache: &AssetResolver,
 ) -> DeviceRecord {
-    let model_info = identity
-        .model_info
-        .clone()
-        .or_else(|| model_info_from_config_key(config_key));
+    let model_info = identity.model_info.clone();
     let asset = model_info
         .as_ref()
         .and_then(|model| cache.resolve(model, identity.codename.as_deref()));
+    let model_key = model_info
+        .as_ref()
+        .map_or_else(|| config_key.to_string(), DeviceModelInfo::config_key);
     DeviceRecord {
         config_key: config_key.to_string(),
+        model_key,
         display_name: identity.display_name.clone(),
         asset,
         model_info,
@@ -172,18 +185,6 @@ fn offline_record(
         online: false,
         battery: None,
     }
-}
-
-fn model_info_from_config_key(config_key: &str) -> Option<DeviceModelInfo> {
-    let (ext, pid) = config_key.split_at_checked(config_key.len().checked_sub(4)?)?;
-    Some(DeviceModelInfo {
-        entity_count: 0,
-        serial_number: None,
-        unit_id: [0; 4],
-        transports: DeviceTransports::default(),
-        model_ids: [u16::from_str_radix(pid, 16).ok()?, 0, 0],
-        extended_model_id: u8::from_str_radix(ext, 16).ok()?,
-    })
 }
 
 /// Order the carousel by physical route. HID enumeration order can change as
@@ -204,7 +205,7 @@ fn device_order_key(record: &DeviceRecord) -> (DeviceStableId, String, String) {
             record.serial_number.as_deref(),
             record.unit_id,
         ),
-        record.config_key.clone(),
+        record.model_key.clone(),
         record.display_name.clone(),
     )
 }
@@ -216,6 +217,7 @@ fn device_order_key(record: &DeviceRecord) -> (DeviceStableId, String, String) {
 fn demo_keyboard() -> DeviceRecord {
     DeviceRecord {
         config_key: "demo-g513".to_string(),
+        model_key: "demo-g513".to_string(),
         display_name: "Logitech G513".to_string(),
         asset: None,
         model_info: None,
@@ -308,7 +310,7 @@ mod tests {
 
     use super::{
         Capabilities, DeviceIdentity, DeviceKind, DeviceRecord, append_offline_known,
-        build_device_list, effective_kind, model_info_from_config_key, offline_record,
+        build_device_list, effective_kind, offline_record,
     };
 
     fn paired_device_no_model_info(slot: u8, wpid: Option<u16>) -> PairedDevice {
@@ -339,6 +341,7 @@ mod tests {
     fn online_record(key: &str) -> DeviceRecord {
         DeviceRecord {
             config_key: key.to_string(),
+            model_key: key.to_string(),
             display_name: format!("live {key}"),
             asset: None,
             model_info: None,
@@ -369,12 +372,13 @@ mod tests {
     }
 
     #[test]
-    fn no_model_info_uses_wpid_as_config_key() {
+    fn no_model_info_uses_receiver_slot_as_config_key() {
         let inv = inventory_with(vec![paired_device_no_model_info(1, Some(0x4076))]);
         let cache = AssetResolver::new();
         let list = build_device_list(&[inv], &cache, &Config::default());
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].config_key, "wpid4076");
+        assert_eq!(list[0].config_key, "receiver:da2699e1:slot:1");
+        assert_eq!(list[0].model_key, "wpid4076");
         assert!(list[0].serial_number.is_none());
         assert_eq!(list[0].unit_id, [0u8; 4]);
     }
@@ -385,7 +389,8 @@ mod tests {
         let cache = AssetResolver::new();
         let list = build_device_list(&[inv], &cache, &Config::default());
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].config_key, "slot3");
+        assert_eq!(list[0].config_key, "receiver:da2699e1:slot:3");
+        assert_eq!(list[0].model_key, "slot3");
     }
 
     #[test]
@@ -409,26 +414,6 @@ mod tests {
         assert!(!rec.online);
         assert!(rec.route.is_none());
         assert_eq!(rec.capabilities, Some(id.capabilities));
-    }
-
-    #[test]
-    fn offline_record_can_rebuild_model_info_from_legacy_config_key() {
-        let id = mouse_identity("MX Master 3S");
-        let cache = AssetResolver::new();
-        let rec = offline_record("2b034", &id, &cache);
-        let model = rec
-            .model_info
-            .expect("legacy config key should rebuild minimal model info");
-        assert_eq!(model.extended_model_id, 0x02);
-        assert_eq!(model.model_ids[0], 0xb034);
-        assert!(model.serial_number.is_none());
-        assert_eq!(model.unit_id, [0; 4]);
-    }
-
-    #[test]
-    fn invalid_legacy_config_key_does_not_make_model_info() {
-        assert!(model_info_from_config_key("wpid4076").is_none());
-        assert!(model_info_from_config_key("123").is_none());
     }
 
     #[test]

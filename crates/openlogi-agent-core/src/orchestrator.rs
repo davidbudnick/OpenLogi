@@ -35,6 +35,7 @@ use crate::watchers::gesture::GestureBindings;
 /// fallback agrees with the GUI carousel — see [`crate::device_order`]).
 struct AgentDevice {
     config_key: String,
+    model_key: String,
     route: Option<DeviceRoute>,
     product_ids: Vec<u16>,
     product_name: Option<String>,
@@ -391,7 +392,7 @@ impl Orchestrator {
 /// Build the agent device list from an inventory snapshot. Mirrors the GUI's
 /// `build_device_list` minus the asset/display fields: a device is included
 /// only once its HID++ DeviceInformation (`model_info`) has resolved, since the
-/// `config_key` is derived from it.
+/// model key is derived from it.
 fn build_devices(inventories: &[DeviceInventory]) -> Vec<AgentDevice> {
     let mut devices = Vec::new();
     for inv in inventories {
@@ -399,9 +400,17 @@ fn build_devices(inventories: &[DeviceInventory]) -> Vec<AgentDevice> {
             let Some(model) = paired.model_info.as_ref() else {
                 continue;
             };
+            let route = DeviceRoute::device_route_for(inv, paired.slot);
+            let stable_id = DeviceStableId::from_parts(
+                route.as_ref(),
+                paired.slot,
+                model.serial_number.as_deref(),
+                model.unit_id,
+            );
             devices.push(AgentDevice {
-                config_key: model.config_key(),
-                route: DeviceRoute::device_route_for(inv, paired.slot),
+                config_key: stable_id.config_key(),
+                model_key: model.config_key(),
+                route,
                 product_ids: model.model_ids.into_iter().filter(|id| *id != 0).collect(),
                 product_name: paired.codename.clone(),
                 receiver_product_id: Some(inv.receiver.product_id),
@@ -420,15 +429,14 @@ fn build_devices(inventories: &[DeviceInventory]) -> Vec<AgentDevice> {
     devices.sort_by(|a, b| {
         stable_id(a)
             .cmp(&stable_id(b))
-            .then_with(|| a.config_key.cmp(&b.config_key))
+            .then_with(|| a.model_key.cmp(&b.model_key))
     });
     devices
 }
 
-/// The canonical identity of one device: what the GUI carousel orders by and
-/// what [`reapply_targets`] matches a device against across inventory ticks.
-/// Unlike `config_key` (derived from the model id), this stays unique for two
-/// physically distinct devices of the same model.
+/// The canonical identity of one device: what the GUI carousel orders by, what
+/// the config key is derived from, and what [`reapply_targets`] matches a device
+/// against across inventory ticks.
 fn stable_id(dev: &AgentDevice) -> DeviceStableId {
     DeviceStableId::from_parts(
         dev.route.as_ref(),
@@ -443,11 +451,8 @@ fn stable_id(dev: &AgentDevice) -> DeviceStableId {
 /// replug that re-enumerated under a new identity — e.g. a Bolt device that
 /// moved slots), or an offline→online transition (a reconnect after device
 /// sleep); plus — after a system wake — every online device. Devices are
-/// matched across ticks by [`stable_id`], never `config_key`: two same-model
-/// devices share a `config_key`, so keying on it made the second device
-/// perpetually match the first, observe a different route, and re-apply on
-/// every tick. Offline devices are never targeted (the write would just time
-/// out); they re-apply on their own transition.
+/// matched across ticks by [`stable_id`]. Offline devices are never targeted
+/// (the write would just time out); they re-apply on their own transition.
 fn reapply_targets(prev: &[AgentDevice], next: &[AgentDevice], reapply_all: bool) -> Vec<usize> {
     next.iter()
         .enumerate()
@@ -498,6 +503,7 @@ mod tests {
     fn dev(key: &str, slot: u8, online: bool) -> AgentDevice {
         AgentDevice {
             config_key: key.to_string(),
+            model_key: key.to_string(),
             route: Some(DeviceRoute::Bolt {
                 receiver_uid: "AA00".to_string(),
                 slot,
@@ -535,11 +541,9 @@ mod tests {
 
     #[test]
     fn reapply_targets_disambiguates_same_model_duplicates() {
-        // Two devices of the same model share a `config_key` but are distinct
-        // physical units at different Bolt slots, so they have distinct stable
-        // ids. A steady tick with both already online must target NEITHER —
-        // matching prev by `config_key` alone made the second device match the
-        // first, observe a different route, and re-apply on every 2s tick.
+        // Two devices can share a model key but are distinct physical units at
+        // different Bolt slots, so they have distinct stable ids. A steady tick
+        // with both already online must target NEITHER.
         let prev = [dev("dup", 1, true), dev("dup", 2, true)];
         let next = [dev("dup", 1, true), dev("dup", 2, true)];
         assert!(reapply_targets(&prev, &next, false).is_empty());

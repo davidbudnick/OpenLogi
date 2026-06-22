@@ -539,8 +539,8 @@ impl AppState {
         // config_key + route, so that guard would otherwise skip the write.
         persist_identities(&mut self.config, &merged_list);
         // Compare more than config_key: a device can reconnect on a new HID++
-        // index while keeping its model-derived config_key, and the fresh route
-        // must replace the stale one so reads/writes don't target a dead index.
+        // index while keeping its physical config key, and the fresh route must
+        // replace the stale one so reads/writes don't target a dead index.
         // `online` and `capabilities` are compared too, so a device waking up or
         // a probe that resolves its feature table on a stable route still
         // refreshes the carousel (and its config panels) instead of being
