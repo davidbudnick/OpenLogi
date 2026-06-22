@@ -936,7 +936,9 @@ fn buttons_tab(mouse_model: &Entity<MouseModelView>) -> impl IntoElement {
 }
 
 /// Pointer tab: the DPI panel, the SmartShift wheel controls, and the
-/// scroll-wheel preferences, each in a titled card, stacked.
+/// scroll-wheel preferences, each in a titled card. Use a responsive two-column
+/// grid that still fits the window's 720 px minimum width, so these short
+/// controls don't force a vertical scroll.
 fn pointer_tab(
     dpi_panel: &Entity<DpiPanel>,
     smartshift_panel: &Entity<SmartShiftPanel>,
@@ -949,26 +951,38 @@ fn pointer_tab(
         .min_h_0()
         .items_center()
         .overflow_y_scrollbar()
-        .p_6()
-        .gap_4()
-        .child(div().w_full().max_w(px(560.)).child(panel_card(
-            tr!("Pointer tuning"),
-            IconName::Settings,
-            pal,
-            dpi_panel.clone().into_any_element(),
-        )))
-        .child(div().w_full().max_w(px(560.)).child(panel_card(
-            tr!("SmartShift"),
-            IconName::Settings,
-            pal,
-            smartshift_panel.clone().into_any_element(),
-        )))
+        .p_5()
         .child(
-            div()
+            h_flex()
                 .w_full()
-                .max_w(px(560.))
-                .child(scrolling_card(pal, cx)),
+                .max_w(px(920.))
+                .items_stretch()
+                .gap_4()
+                .flex_wrap()
+                .child(pointer_grid_card(panel_card_fill(
+                    tr!("Pointer tuning"),
+                    IconName::Settings,
+                    pal,
+                    dpi_panel.clone().into_any_element(),
+                )))
+                .child(pointer_grid_card(panel_card_fill(
+                    tr!("SmartShift"),
+                    IconName::Settings,
+                    pal,
+                    smartshift_panel.clone().into_any_element(),
+                )))
+                .child(pointer_grid_card_natural(scrolling_card(pal, cx))),
         )
+}
+
+fn pointer_grid_card(card: impl IntoElement) -> impl IntoElement {
+    // Two cards plus one 16 px gap fit exactly inside the 720 px window minimum
+    // after this tab's 20 px side padding, while still leaving a usable slider.
+    div().min_w(px(332.)).flex_1().h_full().child(card)
+}
+
+fn pointer_grid_card_natural(card: impl IntoElement) -> impl IntoElement {
+    div().min_w(px(332.)).flex_1().child(card)
 }
 
 /// Scrolling card: a per-device "invert scroll direction" toggle (#126). Pure
@@ -1229,8 +1243,28 @@ fn panel_card(
     pal: Palette,
     content: AnyElement,
 ) -> impl IntoElement {
+    panel_card_inner(title, icon, pal, content, false)
+}
+
+fn panel_card_fill(
+    title: SharedString,
+    icon: IconName,
+    pal: Palette,
+    content: AnyElement,
+) -> impl IntoElement {
+    panel_card_inner(title, icon, pal, content, true)
+}
+
+fn panel_card_inner(
+    title: SharedString,
+    icon: IconName,
+    pal: Palette,
+    content: AnyElement,
+    fill_height: bool,
+) -> impl IntoElement {
     div()
         .w_full()
+        .when(fill_height, |this| this.h_full())
         .max_w_full()
         .min_w_0()
         .rounded_lg()
