@@ -7,16 +7,12 @@
     reason = "Win32 FFI uses raw pointer parameters and fixed-width message values"
 )]
 
-use std::mem::size_of;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::Threading::{
     GetCurrentThreadId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
-};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId,
@@ -206,14 +202,6 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     match disposition {
         EventDisposition::PassThrough => call_next(code, wparam, lparam),
         EventDisposition::Suppress => 1,
-        // Invert the wheel (#126): drop the original and re-inject it with the
-        // vertical delta negated. `SendInput` stamps the synthetic event
-        // `LLMHF_INJECTED`, which `translate_event` skips, so it reaches the
-        // foreground app without looping back here.
-        EventDisposition::InvertScroll => {
-            invert_wheel(data);
-            1
-        }
     }
 }
 
@@ -281,37 +269,6 @@ fn translate_event(wparam: WPARAM, data: MSLLHOOKSTRUCT) -> Option<MouseEvent> {
             device: None,
         }),
         _ => None,
-    }
-}
-
-/// Reverse the vertical wheel of `data` (an inverted-scroll request, #126) by
-/// re-injecting one `SendInput` wheel tick with the delta negated. The synthetic
-/// event is flagged `LLMHF_INJECTED`, which [`translate_event`] skips, so it
-/// reaches the foreground app without looping back through this hook. The
-/// incoming delta lives in the high word of `mouseData`; a `SendInput`
-/// `mouseData` carries it directly.
-fn invert_wheel(data: MSLLHOOKSTRUCT) {
-    let negated = -i32::from(signed_high_word(data.mouseData));
-    let inputs = [INPUT {
-        r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 {
-            mi: MOUSEINPUT {
-                dx: 0,
-                dy: 0,
-                mouseData: u32::from_ne_bytes(negated.to_ne_bytes()),
-                dwFlags: MOUSEEVENTF_WHEEL,
-                time: 0,
-                dwExtraInfo: 0,
-            },
-        },
-    }];
-    let Ok(size) = i32::try_from(size_of::<INPUT>()) else {
-        return;
-    };
-    // SAFETY: `inputs` is one live, initialized `INPUT`; SendInput copies it.
-    let sent = unsafe { SendInput(1, inputs.as_ptr(), size) };
-    if sent != 1 {
-        tracing::warn!("SendInput dropped the inverted wheel tick");
     }
 }
 
@@ -409,17 +366,5 @@ mod tests {
             delta_y > 0.0,
             "wheel-forward should scroll up, got {delta_y}"
         );
-    }
-
-    /// `invert_wheel` re-injects the original high-word delta, negated — an exact
-    /// sign flip with no rounding drift. Verify the value it computes for one
-    /// notch each way (the SendInput side effect itself isn't unit-testable).
-    #[test]
-    fn invert_wheel_negates_the_high_word_delta() {
-        fn high_word_packed(delta: i16) -> u32 {
-            u32::from(u16::from_ne_bytes(delta.to_ne_bytes())) << 16
-        }
-        assert_eq!(-i32::from(signed_high_word(high_word_packed(120))), -120);
-        assert_eq!(-i32::from(signed_high_word(high_word_packed(-120))), 120);
     }
 }

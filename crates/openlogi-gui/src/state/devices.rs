@@ -365,6 +365,7 @@ mod tests {
                 buttons: true,
                 pointer: true,
                 lighting: false,
+                scroll_inversion: false,
             },
             model_info: None,
             codename: None,

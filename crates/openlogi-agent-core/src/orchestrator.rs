@@ -15,16 +15,14 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 
 use openlogi_core::config::Config;
-use openlogi_core::device::DeviceInventory;
+use openlogi_core::device::{Capabilities, DeviceInventory};
 use openlogi_hid::{CaptureChannel, DeviceRoute};
 use tracing::warn;
 
 use crate::DpiCycleState;
 use crate::bindings::{bindings_for, gesture_bindings_for, oshook_gestures_for};
 use crate::device_order::DeviceStableId;
-use crate::hook_runtime::{
-    HookMaps, ScrollDeviceKey, ScrollInversions, SharedHookMaps, SharedScrollInversions,
-};
+use crate::hook_runtime::{HookMaps, SharedHookMaps};
 use crate::ipc::InventoryHealth;
 use crate::receiver_access::ReceiverAccess;
 use crate::watchers::gesture::GestureBindings;
@@ -37,13 +35,10 @@ struct AgentDevice {
     config_key: String,
     model_key: String,
     route: Option<DeviceRoute>,
-    product_ids: Vec<u16>,
-    product_name: Option<String>,
-    receiver_product_id: Option<u16>,
-    receiver_name: Option<String>,
     slot: u8,
     serial: Option<String>,
     unit_id: [u8; 4],
+    capabilities: Option<Capabilities>,
     /// Live link state from the inventory snapshot. An offline→online
     /// transition is a reconnect — the device may have power-cycled, so its
     /// volatile settings need re-applying (#189).
@@ -62,11 +57,6 @@ pub struct SharedRuntime {
     pub gesture_bindings: GestureBindings,
     pub dpi_cycle: Arc<RwLock<DpiCycleState>>,
     pub thumbwheel_sensitivity: Arc<AtomicI32>,
-    /// OS-hook fallback scroll-wheel inversion settings (issue #126). Devices
-    /// reachable over HID++ get native per-device inversion written to the
-    /// firmware instead; keeping them out of this map avoids double-inverting
-    /// the same scroll event.
-    pub scroll_inversions: SharedScrollInversions,
     pub capture_channel: CaptureChannel,
     /// Exclusive receiver access shared by HID++ capture and pairing. Capture
     /// and pairing must never open the same receiver HID node concurrently.
@@ -117,7 +107,6 @@ impl Orchestrator {
             thumbwheel_sensitivity: Arc::new(AtomicI32::new(
                 config.app_settings.thumbwheel_sensitivity,
             )),
-            scroll_inversions: Arc::new(RwLock::new(ScrollInversions::default())),
             capture_channel: Arc::new(RwLock::new(None)),
             receiver_access: ReceiverAccess::default(),
         };
@@ -190,39 +179,6 @@ impl Orchestrator {
             self.config.app_settings.thumbwheel_sensitivity,
             Ordering::Relaxed,
         );
-        write_value(
-            &self.shared.scroll_inversions,
-            ScrollInversions::new(
-                self.devices
-                    .iter()
-                    .filter(|device| device.route.is_none())
-                    .flat_map(|device| {
-                        let invert = self.config.invert_scroll(&device.config_key);
-                        [
-                            (
-                                ScrollDeviceKey {
-                                    product_id: device
-                                        .product_ids
-                                        .iter()
-                                        .copied()
-                                        .find(|id| *id != 0)
-                                        .map(u32::from),
-                                    product_name: device.product_name.clone(),
-                                },
-                                invert,
-                            ),
-                            (
-                                ScrollDeviceKey {
-                                    product_id: device.receiver_product_id.map(u32::from),
-                                    product_name: device.receiver_name.clone(),
-                                },
-                                invert,
-                            ),
-                        ]
-                    }),
-            ),
-            "scroll_inversions",
-        );
     }
 
     /// Apply a fresh inventory snapshot. Always refreshes the snapshot the IPC
@@ -248,10 +204,11 @@ impl Orchestrator {
             self.reapply_volatile_settings(&devices[idx]);
         }
         let changed = devices.len() != self.devices.len()
-            || devices
-                .iter()
-                .zip(&self.devices)
-                .any(|(a, b)| a.config_key != b.config_key || a.route != b.route);
+            || devices.iter().zip(&self.devices).any(|(a, b)| {
+                a.config_key != b.config_key
+                    || a.route != b.route
+                    || a.capabilities != b.capabilities
+            });
         if !changed {
             // Same set and routes — but keep the fresh `online` flags, or a
             // device that woke this tick would read as a transition forever.
@@ -283,7 +240,9 @@ impl Orchestrator {
         let key = &dev.config_key;
         crate::hardware::write_scroll_inversion_in_background(
             Some(&self.shared.capture_channel),
-            Some(route.clone()),
+            dev.capabilities
+                .is_some_and(|capabilities| capabilities.scroll_inversion)
+                .then_some(route.clone()),
             self.config.invert_scroll(key),
         );
         if let Some(lighting) = self.config.lighting(key).filter(|l| l.enabled) {
@@ -319,7 +278,10 @@ impl Orchestrator {
         {
             crate::hardware::write_scroll_inversion_in_background(
                 Some(&self.shared.capture_channel),
-                dev.route.clone(),
+                dev.capabilities
+                    .is_some_and(|capabilities| capabilities.scroll_inversion)
+                    .then(|| dev.route.clone())
+                    .flatten(),
                 self.config.invert_scroll(&dev.config_key),
             );
         }
@@ -411,13 +373,10 @@ fn build_devices(inventories: &[DeviceInventory]) -> Vec<AgentDevice> {
                 config_key: stable_id.config_key(),
                 model_key: model.config_key(),
                 route,
-                product_ids: model.model_ids.into_iter().filter(|id| *id != 0).collect(),
-                product_name: paired.codename.clone(),
-                receiver_product_id: Some(inv.receiver.product_id),
-                receiver_name: Some(inv.receiver.name.clone()),
                 slot: paired.slot,
                 serial: model.serial_number.clone(),
                 unit_id: model.unit_id,
+                capabilities: paired.capabilities,
                 online: paired.online,
             });
         }
@@ -508,13 +467,10 @@ mod tests {
                 receiver_uid: "AA00".to_string(),
                 slot,
             }),
-            product_ids: Vec::new(),
-            product_name: None,
-            receiver_product_id: None,
-            receiver_name: None,
             slot,
             serial: None,
             unit_id: [0; 4],
+            capabilities: None,
             online,
         }
     }

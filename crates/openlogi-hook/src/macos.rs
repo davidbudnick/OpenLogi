@@ -13,9 +13,8 @@ use core_foundation::runloop::{
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{
     CGEvent, CGEventField, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventTapProxy, CGEventType, CallbackResult, EventField, ScrollEventUnit,
+    CGEventTapProxy, CGEventType, CallbackResult, EventField,
 };
-use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use foreign_types_shared::ForeignType as _;
 use tracing::{debug, error, warn};
 
@@ -409,88 +408,6 @@ fn usable_scroll_delta(event: &CGEvent, axis: ScrollAxisFields) -> f64 {
     event.get_integer_value_field(axis.line) as f64
 }
 
-fn scroll_diag_enabled() -> bool {
-    std::env::var_os("OPENLOGI_SCROLL_DIAG").is_some()
-}
-
-/// The value and unit to use when re-synthesising a captured scroll axis.
-#[derive(Clone, Copy)]
-struct SyntheticScrollDelta {
-    value: i32,
-    uses_pixels: bool,
-}
-
-/// Convert one captured scroll axis into the integer delta accepted by
-/// `CGEventCreateScrollWheelEvent`. Pixel/fixed-point input stays pixel-based;
-/// ordinary wheel-line input stays line-based.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "per-event scroll deltas are small enough for CGEvent's i32 wheel fields"
-)]
-fn synthetic_scroll_delta(event: &CGEvent, axis: ScrollAxisFields) -> SyntheticScrollDelta {
-    let point = event.get_double_value_field(axis.point);
-    if point != 0.0 {
-        return SyntheticScrollDelta {
-            value: point.round() as i32,
-            uses_pixels: true,
-        };
-    }
-    let fixed = event.get_double_value_field(axis.fixed);
-    if fixed != 0.0 {
-        return SyntheticScrollDelta {
-            value: fixed.round() as i32,
-            uses_pixels: true,
-        };
-    }
-    SyntheticScrollDelta {
-        value: event.get_integer_value_field(axis.line) as i32,
-        uses_pixels: false,
-    }
-}
-
-/// Post a synthetic copy of a physical scroll with the vertical axis reversed.
-/// Posting a fresh event is more reliable for hardware mouse wheels than
-/// mutating or replacing the HID-backed `CGEvent`; horizontal motion is
-/// preserved so diagonal/tilt-wheel input does not lose an axis.
-fn post_inverted_scroll(event: &CGEvent) -> bool {
-    let vertical = synthetic_scroll_delta(event, VERTICAL);
-    let horizontal = synthetic_scroll_delta(event, HORIZONTAL);
-    let unit = if vertical.uses_pixels || horizontal.uses_pixels {
-        ScrollEventUnit::PIXEL
-    } else {
-        ScrollEventUnit::LINE
-    };
-    let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) else {
-        warn!("CGEventSource::new failed for inverted scroll");
-        return false;
-    };
-    let Ok(synthetic) =
-        CGEvent::new_scroll_event(source, unit, 2, -vertical.value, horizontal.value, 0)
-    else {
-        warn!("CGEvent::new_scroll_event failed for inverted scroll");
-        return false;
-    };
-    synthetic.set_integer_value_field(
-        EventField::EVENT_SOURCE_USER_DATA,
-        openlogi_inject::SYNTHETIC_EVENT_USER_DATA,
-    );
-    if scroll_diag_enabled() {
-        warn!(
-            input_vertical = vertical.value,
-            output_vertical = -vertical.value,
-            horizontal = horizontal.value,
-            unit = if matches!(unit, ScrollEventUnit::PIXEL) {
-                "pixel"
-            } else {
-                "line"
-            },
-            "posting inverted synthetic scroll and dropping original"
-        );
-    }
-    synthetic.post(CGEventTapLocation::HID);
-    true
-}
-
 /// Create the event tap and run loop on a dedicated thread.
 pub(crate) fn start(
     cb: impl Fn(MouseEvent) -> EventDisposition + Send + Sync + 'static,
@@ -562,13 +479,6 @@ fn thread_main(
             match cb(mouse_event) {
                 EventDisposition::PassThrough => CallbackResult::Keep,
                 EventDisposition::Suppress => CallbackResult::Drop,
-                EventDisposition::InvertScroll => {
-                    if post_inverted_scroll(event) {
-                        CallbackResult::Drop
-                    } else {
-                        CallbackResult::Keep
-                    }
-                }
             }
         },
     );

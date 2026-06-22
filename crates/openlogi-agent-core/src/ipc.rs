@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 /// v3: `inventory_ready` widened to [`InventoryHealth`] (adds `Unavailable`).
 /// v4: [`Agent::snapshot`] added for atomic status + inventory polling.
 /// v5: [`PairingUpdate::Failed`] carries a typed [`PairingFailure`].
-pub const PROTOCOL_VERSION: u32 = 5;
+/// v6: `Capabilities::scroll_inversion` added.
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Where the agent's device enumeration stands. The distinction matters
 /// because an empty inventory list is ambiguous on its own: the GUI must keep

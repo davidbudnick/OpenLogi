@@ -97,12 +97,6 @@ pub enum EventDisposition {
     PassThrough,
     /// Drop the event; the target application never sees it.
     Suppress,
-    /// Reverse the vertical direction of a [`MouseEvent::Scroll`] (issue #126).
-    /// Each platform owns the safest transform for its event stream — macOS
-    /// replaces the HID-backed event with a synthetic inverted scroll, while
-    /// Linux and Windows re-inject the wheel tick with the sign flipped. No
-    /// payload: the hook already holds the captured event.
-    InvertScroll,
 }
 
 /// Errors that [`Hook::start`] and related functions can produce.

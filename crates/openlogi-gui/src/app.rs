@@ -975,9 +975,17 @@ fn pointer_tab(
 /// config — no hardware read — so it is a plain switch row rather than an
 /// `Entity` panel like DPI / SmartShift.
 fn scrolling_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
-    let inverted = cx
-        .try_global::<AppState>()
-        .is_some_and(AppState::current_invert_scroll);
+    let (inverted, supported) = cx.try_global::<AppState>().map_or((false, false), |state| {
+        (
+            state.current_invert_scroll(),
+            state.current_scroll_inversion_supported(),
+        )
+    });
+    let description = if supported {
+        tr!("Reverse this mouse's scroll wheel. Your trackpad keeps the system scroll direction.")
+    } else {
+        tr!("This device does not report native HID++ scroll inversion support.")
+    };
     let row = h_flex()
         .justify_between()
         .items_center()
@@ -990,11 +998,14 @@ fn scrolling_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
                         .text_color(pal.text_primary)
                         .child(tr!("Invert scroll direction")),
                 )
-                .child(div().text_xs().text_color(pal.text_muted).child(tr!(
-                    "Reverse this mouse's scroll wheel. Your trackpad keeps the system scroll direction."
-                ))),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(pal.text_muted)
+                        .child(description),
+                ),
         )
-        .child(invert_scroll_toggle(inverted, pal));
+        .child(invert_scroll_toggle(inverted, supported, pal));
     panel_card(
         tr!("Scrolling"),
         IconName::Settings,
@@ -1005,8 +1016,20 @@ fn scrolling_card(pal: Palette, cx: &mut Context<AppView>) -> impl IntoElement {
 
 /// On/Off pill that flips the active device's scroll-wheel inversion, mirroring
 /// the SmartShift permanent-ratchet toggle.
-fn invert_scroll_toggle(on: bool, pal: Palette) -> impl IntoElement {
+fn invert_scroll_toggle(on: bool, enabled: bool, pal: Palette) -> AnyElement {
     let label = if on { tr!("On") } else { tr!("Off") };
+    if !enabled {
+        return div()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(pal.border)
+            .text_xs()
+            .text_color(pal.text_muted)
+            .child(tr!("Unavailable"))
+            .into_any_element();
+    }
     div()
         .id("invert-scroll-toggle")
         .px_2()
@@ -1024,6 +1047,7 @@ fn invert_scroll_toggle(on: bool, pal: Palette) -> impl IntoElement {
             });
             cx.refresh_windows();
         })
+        .into_any_element()
 }
 
 /// Lighting tab: the RGB controls (swatches, on/off, brightness) in a titled
@@ -1660,6 +1684,7 @@ mod tests {
             buttons: true,
             pointer: true,
             lighting: false,
+            scroll_inversion: false,
         });
         // After 0x0005 kind-correction the record has kind=Mouse, not Keyboard.
         let tabs = DetailTab::tabs_for(&record(DeviceKind::Mouse, caps));
@@ -1677,6 +1702,7 @@ mod tests {
             buttons: true,
             pointer: false,
             lighting: true,
+            scroll_inversion: false,
         });
         let tabs = DetailTab::tabs_for(&record(DeviceKind::Keyboard, caps));
         assert!(

@@ -1147,6 +1147,7 @@ mod tests {
                 buttons: true,
                 pointer: true,
                 lighting: false,
+                scroll_inversion: false,
             },
         };
         cfg.set_device_identity("2b034", mouse.clone());

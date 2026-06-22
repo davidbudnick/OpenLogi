@@ -956,11 +956,22 @@ impl AppState {
             .is_some_and(|r| self.config.invert_scroll(&r.config_key))
     }
 
+    /// Whether the active device reports native HID++ wheel inversion support.
+    #[must_use]
+    pub fn current_scroll_inversion_supported(&self) -> bool {
+        self.current_record()
+            .and_then(|record| record.capabilities)
+            .is_some_and(|capabilities| capabilities.scroll_inversion)
+    }
+
     /// Set the active device's scroll-wheel inversion, persist it, and reload
-    /// the agent so the OS hook applies it on the next scroll. No-op when no
-    /// device is selected. Pure config — there is no hardware write, so (unlike
-    /// DPI / SmartShift) no optimistic cache or confirming re-read is needed.
+    /// the agent so it writes the device's native HID++ wheel inversion. No-op
+    /// when no device is selected or the active device does not report support.
     pub fn commit_invert_scroll(&mut self, invert: bool) {
+        if !self.current_scroll_inversion_supported() {
+            debug!("active device does not support native scroll inversion");
+            return;
+        }
         let Some(key) = self.current_record().map(|r| r.config_key.clone()) else {
             debug!("no active device — invert-scroll change ignored");
             return;

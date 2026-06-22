@@ -51,14 +51,6 @@ fn event_disposition_equality() {
     assert_eq!(EventDisposition::PassThrough, EventDisposition::PassThrough);
     assert_eq!(EventDisposition::Suppress, EventDisposition::Suppress);
     assert_ne!(EventDisposition::PassThrough, EventDisposition::Suppress);
-    assert_eq!(
-        EventDisposition::InvertScroll,
-        EventDisposition::InvertScroll
-    );
-    assert_ne!(
-        EventDisposition::InvertScroll,
-        EventDisposition::PassThrough
-    );
 }
 
 /// On unsupported targets (not macOS, not Linux), `Hook::start` returns `Unsupported`.

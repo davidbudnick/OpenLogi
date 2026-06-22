@@ -68,6 +68,10 @@ impl DeviceKind {
 /// (issue #127): kind is an identity guess, capability is what the firmware
 /// actually announced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "capabilities is a serialized feature-bit DTO; independent booleans keep the IPC/config shape explicit"
+)]
 pub struct Capabilities {
     /// Reprogrammable buttons — HID++ `0x1b00`–`0x1b04` (ReprogControls).
     pub buttons: bool,
@@ -78,6 +82,9 @@ pub struct Capabilities {
     /// `set_keyboard_color` writes. Backlight-only families aren't driven by the
     /// panel, so they don't flip this and don't earn an inert Lighting tab.
     pub lighting: bool,
+    /// Native vertical wheel inversion — HID++ `0x2121 HiResWheel` with the
+    /// firmware-reported `has_invert` capability.
+    pub scroll_inversion: bool,
 }
 
 impl Capabilities {
@@ -97,6 +104,7 @@ impl Capabilities {
             buttons: has(&BUTTONS),
             pointer: has(&POINTER),
             lighting: has(&LIGHTING),
+            scroll_inversion: false,
         }
     }
 
@@ -112,6 +120,7 @@ impl Capabilities {
                 buttons: true,
                 pointer: true,
                 lighting: false,
+                scroll_inversion: false,
             },
             DeviceKind::Keyboard => Self {
                 lighting: true,
@@ -283,6 +292,7 @@ mod tests {
                 buttons: true,
                 pointer: true,
                 lighting: false,
+                scroll_inversion: false,
             }
         );
         // A wired G-series keyboard: PerKeyLighting (0x8080), no DPI/buttons.
@@ -293,6 +303,7 @@ mod tests {
                 buttons: false,
                 pointer: false,
                 lighting: true,
+                scroll_inversion: false,
             }
         );
         // No driving features → nothing offered.

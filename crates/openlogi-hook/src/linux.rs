@@ -21,7 +21,7 @@ use std::sync::{
 use std::thread;
 
 use evdev::uinput::VirtualDevice;
-use evdev::{Device, EventSummary, EventType, InputEvent, KeyCode, RelativeAxisCode};
+use evdev::{Device, EventSummary, InputEvent, KeyCode, RelativeAxisCode};
 use tracing::{debug, error, warn};
 use x11rb::connection::Connection as _;
 use x11rb::properties::WmClass;
@@ -221,23 +221,6 @@ fn scroll(delta_x: f32, delta_y: f32) -> MouseEvent {
     }
 }
 
-/// Re-encode a captured vertical-wheel event with its direction reversed, for
-/// re-injection on an [`EventDisposition::InvertScroll`]. The value is simply
-/// negated — exact for any wheel tick. A horizontal or non-wheel event is
-/// returned unchanged (the inversion is vertical-only, and the agent never asks
-/// to invert a horizontal scroll).
-fn invert_wheel_event(event: &InputEvent) -> InputEvent {
-    if let EventSummary::RelativeAxis(_, axis, value) = event.destructure()
-        && matches!(
-            axis,
-            RelativeAxisCode::REL_WHEEL | RelativeAxisCode::REL_WHEEL_HI_RES
-        )
-    {
-        return InputEvent::new(EventType::RELATIVE.0, axis.0, -value);
-    }
-    *event
-}
-
 fn translate(event: &evdev::InputEvent, hires_scroll: bool) -> Option<MouseEvent> {
     match event.destructure() {
         EventSummary::Key(_, key, value) => {
@@ -392,12 +375,6 @@ fn device_thread(
                 };
                 match disposition {
                     EventDisposition::PassThrough => pending.push(event),
-                    // Re-inject the wheel tick with its direction reversed (#126).
-                    // uinput events go to the desktop, not back into this grabbed
-                    // device's reader, so there is no re-capture loop to guard.
-                    EventDisposition::InvertScroll => {
-                        pending.push(invert_wheel_event(&event));
-                    }
                     EventDisposition::Suppress => {}
                 }
             }

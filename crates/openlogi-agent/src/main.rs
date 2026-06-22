@@ -200,7 +200,6 @@ async fn run(config: Config) {
                         shared.hook_maps.clone(),
                         shared.dpi_cycle.clone(),
                         shared.capture_channel.clone(),
-                        shared.scroll_inversions.clone(),
                     );
                     hook_installed.store(hook.is_some(), Ordering::Relaxed);
                 }
